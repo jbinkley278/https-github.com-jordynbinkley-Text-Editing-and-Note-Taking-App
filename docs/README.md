@@ -1,8 +1,6 @@
-# Project documentation
+# Group 6 project documentation
 
-- [Information Sheet](information-sheet.md)
-- [Production Plan](production-plan.md)
-- [Sprint 1](Sprint1/README.md)
-- [Sprint 2](Sprint2/README.md)
-- [Sprint 3](Sprint3/README.md)
-- [Sprint 4](Sprint4/README.md)
+- [Project Information Sheet](information-sheet.md) — submission links and starting assignments
+- [Production Plan](production-plan.md) — scope, owners, schedule, milestones, risks, and release checklist
+
+The application implementation and local setup instructions are documented in the [repository README](../README.md).
