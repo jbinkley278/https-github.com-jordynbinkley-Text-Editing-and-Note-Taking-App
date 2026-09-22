@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A fast, browser-based note-taking workspace." />
+    <title>Noteworthy</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span aria-hidden="true">✦</span> Noteworthy</div>
+        <button class="new-note" id="new-note" type="button">+ New note</button>
+        <label class="search">
+          <span class="sr-only">Search notes</span>
+          <input id="search" type="search" placeholder="Search notes…" autocomplete="off" />
+        </label>
+        <div class="list-heading"><span>Your notes</span><span id="note-count">0</span></div>
+        <nav id="note-list" class="note-list" aria-label="Notes"></nav>
+      </aside>
+
+      <main class="editor" id="editor">
+        <div class="editor-actions">
+          <span id="save-status" role="status">Saved</span>
+          <button id="pin-note" class="icon-button" type="button" aria-label="Pin note" title="Pin note">☆</button>
+          <button id="delete-note" class="icon-button danger" type="button" aria-label="Delete note" title="Delete note">Delete</button>
+        </div>
+        <input id="note-title" class="title-input" aria-label="Note title" placeholder="Untitled note" maxlength="120" />
+        <div class="note-meta" id="note-meta"></div>
+        <textarea id="note-body" aria-label="Note content" placeholder="Start writing your thoughts…"></textarea>
+      </main>
+
+      <section id="empty-state" class="empty-state" hidden>
+        <div class="empty-icon" aria-hidden="true">✎</div>
+        <h1>No note selected</h1>
+        <p>Create a note to capture your next idea.</p>
+        <button class="new-note" id="empty-new-note" type="button">Create a note</button>
+      </section>
+    </div>
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>
