@@ -1,6 +1,6 @@
 # Text Editing and Note Taking Application
 
-A browser-based notes workspace created by Cyril Jijo, Jeremiah Hackworth, and Jordyn Binkley. The first implementation supports creating, editing, searching, pinning, and deleting notes, with automatic persistence in the browser.
+A browser-based notes workspace created by Tobi Akere, Brandon Clair, Pariyar Sandesh, and Jordyn Binkley. The first implementation supports creating, editing, searching, pinning, and deleting notes, with automatic persistence in the browser.
 
 ## Run locally
 
@@ -20,9 +20,10 @@ Then open <http://localhost:8000>.
 
 ## Team
 
-- Cyril Jijo — Team Lead / Backend
-- Jeremiah Hackworth — Frontend / UX
-- Jordyn Binkley — Data / QA
+- Tobi Akere — Team Lead / Backend
+- Brandon Clair — Frontend / UX
+- Pariyar Sandesh — Data / QA
+- Jordyn Binkley — Product Coordination / Documentation
 
 ## Current functionality
 
