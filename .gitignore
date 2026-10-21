@@ -4,3 +4,12 @@ node_modules/
 .env
 .DS_Store
 
+# Local database dumps / binaries (never commit)
+*.db
+*.sqlite
+*.sqlite3
+*.bson
+dump/
+*.mongodump
+*.dump
+

@@ -12,7 +12,9 @@
     <header class="topbar">
       <a class="brand" href="#/dashboard">GroupFlow</a>
       <span class="group-name" id="group-name"></span>
-      <a class="avatar" id="current-user" href="#/members" title="Your profile"></a>
+      <span class="user-name" id="user-name" hidden></span>
+      <a class="avatar" id="current-user" href="#/members" title="Your profile" hidden></a>
+      <button type="button" class="btn-secondary logout-btn" id="logout-btn" hidden>Log out</button>
     </header>
 
     <div class="layout">
@@ -23,6 +25,8 @@
         <a href="#/chat" data-route="chat">Group Chat <span class="badge" id="chat-badge" hidden></span></a>
         <a href="#/progress" data-route="progress">Progress</a>
         <a href="#/members" data-route="members">Members</a>
+        <a href="#/groups" data-route="groups">Groups</a>
+        <a href="#/invite" data-route="invite">Invite</a>
       </nav>
 
       <main id="main" tabindex="-1"></main>
@@ -73,6 +77,13 @@
             </select>
           </label>
         </div>
+        <div class="subtasks-block">
+          <h3>Subtasks</h3>
+          <p class="field-error" data-error="subtasks"></p>
+          <div id="subtask-list"></div>
+          <button type="button" class="btn-secondary" id="add-subtask">+ Add subtask</button>
+        </div>
+        <p class="form-error" id="task-form-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" class="btn-danger" id="delete-task">Delete task</button>
           <span class="spacer"></span>
@@ -84,21 +95,36 @@
 
     <dialog id="event-dialog" aria-labelledby="event-dialog-title">
       <form id="event-form" method="dialog" novalidate>
-        <h2 id="event-dialog-title">Add event</h2>
+        <h2 id="event-dialog-title">Add meeting</h2>
         <label>Title
           <input name="title" maxlength="80" required />
         </label>
+        <p class="field-error" data-error="title"></p>
         <label>Date
           <input name="date" type="date" required />
         </label>
+        <p class="field-error" data-error="date"></p>
+        <div class="field-row">
+          <label>Start time (optional)
+            <input name="startTime" type="time" />
+          </label>
+          <label>Time zone
+            <input name="timeZone" maxlength="64" placeholder="America/Chicago" />
+          </label>
+        </div>
+        <p class="field-error" data-error="startTime"></p>
+        <p class="field-error" data-error="timeZone"></p>
+        <p class="muted">Timed meetings show the stored time zone. Leave time empty for a date-only meeting.</p>
         <label>Notes
-          <textarea name="description" rows="2"></textarea>
+          <textarea name="description" rows="2" maxlength="1000"></textarea>
         </label>
-        <p class="field-error" data-error="event"></p>
+        <p class="field-error" data-error="description"></p>
+        <p class="form-error" id="event-form-error" role="alert"></p>
         <div class="dialog-actions">
+          <button type="button" class="btn-danger" id="delete-event" hidden>Delete meeting</button>
           <span class="spacer"></span>
           <button type="button" class="btn-secondary" data-close>Cancel</button>
-          <button type="submit" class="btn-primary">Add event</button>
+          <button type="submit" class="btn-primary">Save meeting</button>
         </div>
       </form>
     </dialog>
