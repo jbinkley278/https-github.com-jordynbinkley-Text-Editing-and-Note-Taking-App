@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { ACTIONS, describeTaskStatus, recordActivity } from "../activity/service.js";
+import { ACTIONS, describeTaskStatus, recordActivityBestEffort } from "../activity/service.js";
 import { asObjectId, requireMembership } from "../groups/service.js";
 
 export async function ensureTaskIndexes(db) {
@@ -102,7 +102,7 @@ export async function createTask(db, groupIdRaw, user, fields) {
   };
   const result = await db.collection("tasks").insertOne(doc);
   const task = { ...doc, _id: result.insertedId };
-  await recordActivity(db, {
+  await recordActivityBestEffort(db, {
     groupId: group._id,
     actor: user,
     action: ACTIONS.TASK_CREATED,
@@ -142,8 +142,9 @@ export async function updateTask(db, groupIdRaw, taskIdRaw, user, fields) {
   await db.collection("tasks").replaceOne({ _id: taskId, groupId: group._id }, updated);
 
   const title = updated.title;
+  // Each activity entry is independent so one failure does not block the others.
   if ("status" in fields && fields.status !== existing.status) {
-    await recordActivity(db, {
+    await recordActivityBestEffort(db, {
       groupId: group._id,
       actor: user,
       action: ACTIONS.TASK_STATUS_CHANGED,
@@ -159,7 +160,7 @@ export async function updateTask(db, groupIdRaw, taskIdRaw, user, fields) {
     const next = updated.assigneeId ? String(updated.assigneeId) : null;
     if (prev !== next) {
       const label = await assigneeLabel(db, updated.assigneeId);
-      await recordActivity(db, {
+      await recordActivityBestEffort(db, {
         groupId: group._id,
         actor: user,
         action: ACTIONS.TASK_ASSIGNED,
@@ -177,7 +178,7 @@ export async function updateTask(db, groupIdRaw, taskIdRaw, user, fields) {
     return JSON.stringify(updated[key]) !== JSON.stringify(existing[key]);
   });
   if (otherChanged) {
-    await recordActivity(db, {
+    await recordActivityBestEffort(db, {
       groupId: group._id,
       actor: user,
       action: ACTIONS.TASK_UPDATED,
@@ -202,7 +203,7 @@ export async function deleteTask(db, groupIdRaw, taskIdRaw, user) {
     throw error;
   }
   await db.collection("tasks").deleteOne({ _id: taskId, groupId: group._id });
-  await recordActivity(db, {
+  await recordActivityBestEffort(db, {
     groupId: group._id,
     actor: user,
     action: ACTIONS.TASK_DELETED,

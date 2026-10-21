@@ -20,17 +20,20 @@ export function createApp() {
   app.use(cookieParser());
 
   /**
-   * Distinguishes process health from MongoDB connectivity.
-   * - 200: server is up (database may still be disconnected → status "degraded")
-   * - database field reports connected | disconnected
+   * Distinguishes process health from MongoDB readiness.
+   * - 200: Express is up (database may still be unavailable → status "degraded")
+   * - database "connected" only after connect + required index setup succeed
+   * - databaseRetrying true only while a prepare attempt is in flight or a backoff timer is scheduled
    */
   app.get("/api/health", async (_req, res) => {
     const db = await checkDbHealth();
     const payload = {
-      status: db.connected ? "ok" : "degraded",
+      status: db.ready ? "ok" : "degraded",
       server: "ok",
-      database: db.connected ? "connected" : "disconnected",
-      ...(db.connected ? {} : { databaseError: db.error }),
+      database: db.ready ? "connected" : "disconnected",
+      databaseReady: db.ready,
+      databaseRetrying: Boolean(db.retrying),
+      ...(db.ready ? {} : { databaseError: db.error }),
       timestamp: new Date().toISOString(),
     };
     res.status(200).json(payload);
@@ -51,11 +54,19 @@ export function createApp() {
   app.use("/api/groups/:groupId/activity", createActivityRouter());
   app.use("/api/groups", createGroupsRouter());
 
-  app.use(express.static(rootDir, {
-    extensions: ["html"],
-    index: "index.html",
-    fallthrough: true,
-  }));
+  // Public frontend only — never serve the repo root (server/, test/, package.json, .env, docs, etc.).
+  app.get(["/", "/index.html"], (_req, res) => {
+    res.sendFile(path.join(rootDir, "index.html"));
+  });
+
+  app.use(
+    "/src",
+    express.static(path.join(rootDir, "src"), {
+      fallthrough: false,
+      index: false,
+      dotfiles: "deny",
+    }),
+  );
 
   app.use((err, _req, res, _next) => {
     console.error(err);

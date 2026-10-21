@@ -19,7 +19,7 @@ const validatedTestTarget = assertSafeTestMongoUri(process.env.MONGODB_URI_TEST,
 // Force every subsequent server/config import to use only the validated test URI.
 process.env.MONGODB_URI = validatedTestTarget.uri;
 
-const { closeDb, connectDb, getDb } = await import("../server/db.js");
+const { becomeReady, closeDb, getDb, stopDbReconnect } = await import("../server/db.js");
 const { createApp } = await import("../server/app.js");
 const { ensureAuthIndexes } = await import("../server/auth/sessions.js");
 const { ensureGroupIndexes } = await import("../server/groups/service.js");
@@ -29,6 +29,16 @@ const { ensureReadPositionIndexes } = await import("../server/messages/readPosit
 const { ensureEventIndexes } = await import("../server/events/service.js");
 const { ensureActivityIndexes } = await import("../server/activity/service.js");
 const { config } = await import("../server/config.js");
+
+async function ensureAllIndexes(db) {
+  await ensureAuthIndexes(db);
+  await ensureGroupIndexes(db);
+  await ensureTaskIndexes(db);
+  await ensureMessageIndexes(db);
+  await ensureReadPositionIndexes(db);
+  await ensureEventIndexes(db);
+  await ensureActivityIndexes(db);
+}
 
 assert.equal(
   config.mongodbUri,
@@ -67,7 +77,11 @@ export function cookieJar() {
 }
 
 export async function withServer(run) {
-  await connectDb(validatedTestTarget.uri);
+  stopDbReconnect();
+  await becomeReady({
+    uri: validatedTestTarget.uri,
+    ensureIndexes: ensureAllIndexes,
+  });
   const db = getDb();
   assert.ok(db, "MongoDB must be available for API tests");
   assert.equal(
@@ -87,13 +101,6 @@ export async function withServer(run) {
   await db.collection("groups").deleteMany({});
   await db.collection("sessions").deleteMany({});
   await db.collection("users").deleteMany({});
-  await ensureAuthIndexes(db);
-  await ensureGroupIndexes(db);
-  await ensureTaskIndexes(db);
-  await ensureMessageIndexes(db);
-  await ensureReadPositionIndexes(db);
-  await ensureEventIndexes(db);
-  await ensureActivityIndexes(db);
 
   const app = createApp();
   const server = app.listen(0);
@@ -139,6 +146,7 @@ export async function withServer(run) {
       testDatabase: validatedTestTarget.database,
     });
   } finally {
+    stopDbReconnect();
     server.close();
     await once(server, "close");
     await closeDb();

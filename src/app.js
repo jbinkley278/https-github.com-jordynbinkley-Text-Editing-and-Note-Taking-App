@@ -35,11 +35,20 @@ import {
   authView, boardView, calendarView, chatView, createGroupView, dashboardView, groupMembersView,
   groupsHomeView, initials, inviteView, joinGroupView, notFoundView, progressView,
 } from "./views.js";
+import { populateAssigneeSelect } from "./assigneeSelect.js";
+import {
+  chatObserverRoot,
+  contiguousVisibleUpToId,
+  initialScrollMessageId,
+  isNearBottom,
+} from "./chatReadPolicy.js";
 
 /** Poll interval while Group Chat is open (simple HTTP refresh; expected delay up to this). */
 const CHAT_POLL_MS = 3000;
 /** Same modest interval for dashboard/sidebar unread counts. */
 const UNREAD_POLL_MS = CHAT_POLL_MS;
+/** Debounce viewport → read-cursor POSTs while scrolling. */
+const MARK_READ_DEBOUNCE_MS = 120;
 
 const main = document.querySelector("#main");
 const taskDialog = document.querySelector("#task-dialog");
@@ -77,6 +86,16 @@ let unreadPollTimer = null;
 let unreadCount = null;
 let unreadLoading = false;
 let unreadError = "";
+/** Server-backed per-user/per-group read cursor id (from unread/read APIs). */
+let lastReadMessageId = null;
+/** @type {IntersectionObserver | null} */
+let chatReadObserver = null;
+/** Message ids currently intersecting the chat viewport. */
+let visibleMessageIds = new Set();
+/** @type {ReturnType<typeof setTimeout> | null} */
+let markReadTimer = null;
+/** After sending, pin the transcript to the bottom on the next chat paint. */
+let chatForceScrollBottom = false;
 let eventsLoading = false;
 let eventsError = "";
 /** @type {Array<object>} */
@@ -155,9 +174,22 @@ function stopUnreadPolling() {
   }
 }
 
+function stopChatReadObserver() {
+  if (markReadTimer) {
+    clearTimeout(markReadTimer);
+    markReadTimer = null;
+  }
+  if (chatReadObserver) {
+    chatReadObserver.disconnect();
+    chatReadObserver = null;
+  }
+  visibleMessageIds = new Set();
+}
+
 function clearGroupState() {
   stopChatPolling();
   stopUnreadPolling();
+  stopChatReadObserver();
   activeGroup = null;
   groupMembers = [];
   state = null;
@@ -169,9 +201,11 @@ function clearGroupState() {
   chatSendError = "";
   chatSending = false;
   chatDraft = "";
+  chatForceScrollBottom = false;
   unreadCount = null;
   unreadLoading = false;
   unreadError = "";
+  lastReadMessageId = null;
   eventsLoading = false;
   eventsError = "";
   activityFeed = [];
@@ -294,12 +328,6 @@ function chatIsVisible() {
     && Boolean(activeGroup);
 }
 
-function lastDisplayedMessageId(messages) {
-  const list = messages ?? [];
-  if (!list.length) return null;
-  return list[list.length - 1]?.id ?? null;
-}
-
 async function loadUnread({ quiet = false } = {}) {
   if (!activeGroup) return { ok: false };
   if (!quiet) {
@@ -317,17 +345,24 @@ async function loadUnread({ quiet = false } = {}) {
   }
   unreadError = "";
   unreadCount = Number(result.data.unreadCount) || 0;
+  lastReadMessageId = result.data.lastReadMessageId ?? null;
   updateChatBadge();
   if (currentRoute().page === "dashboard") renderApp({ focus: false });
   return result;
 }
 
 /**
- * Advance read cursor only through messages already shown in the active chat view.
- * Pass the last id from the displayed batch so newer unseen messages stay unread.
+ * Advance the MongoDB read cursor only through a contiguous visible prefix
+ * starting at the first unread message (never skip off-screen history).
  */
-async function markDisplayedMessagesRead(upToMessageId) {
-  if (!activeGroup || !upToMessageId || !chatIsVisible()) return { ok: false };
+async function markVisibleMessagesRead() {
+  if (!activeGroup || !state?.messages?.length || !chatIsVisible()) return { ok: false };
+  const upToMessageId = contiguousVisibleUpToId(
+    state.messages,
+    lastReadMessageId,
+    visibleMessageIds,
+  );
+  if (!upToMessageId || upToMessageId === lastReadMessageId) return { ok: false };
   const result = await markMessagesReadRequest(activeGroup.id, upToMessageId);
   if (!result.ok) {
     unreadError = result.data.error ?? "Could not update read position.";
@@ -336,9 +371,40 @@ async function markDisplayedMessagesRead(upToMessageId) {
   }
   unreadError = "";
   unreadCount = Number(result.data.unreadCount) || 0;
+  lastReadMessageId = result.data.lastReadMessageId ?? upToMessageId;
   updateChatBadge();
   if (currentRoute().page === "dashboard") renderApp({ focus: false });
   return result;
+}
+
+function scheduleMarkVisibleRead() {
+  if (markReadTimer) clearTimeout(markReadTimer);
+  markReadTimer = setTimeout(() => {
+    markReadTimer = null;
+    markVisibleMessagesRead().catch(() => {});
+  }, MARK_READ_DEBOUNCE_MS);
+}
+
+function startChatReadObserver() {
+  stopChatReadObserver();
+  if (!chatIsVisible()) return;
+  const list = document.querySelector("#messages");
+  if (!list) return;
+
+  const root = chatObserverRoot(list);
+  chatReadObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const id = entry.target.getAttribute("data-message-id");
+      if (!id) continue;
+      if (entry.isIntersecting) visibleMessageIds.add(id);
+      else visibleMessageIds.delete(id);
+    }
+    scheduleMarkVisibleRead();
+  }, { root, threshold: 0.5 });
+
+  list.querySelectorAll("[data-message-id]").forEach((el) => {
+    chatReadObserver.observe(el);
+  });
 }
 
 function updateChatBadge() {
@@ -361,7 +427,7 @@ function updateChatBadge() {
   badge.removeAttribute("aria-label");
 }
 
-async function loadMessages({ quiet = false, markRead = true } = {}) {
+async function loadMessages({ quiet = false } = {}) {
   if (!activeGroup || !state) return { ok: false };
   if (!quiet) {
     chatLoading = true;
@@ -391,10 +457,6 @@ async function loadMessages({ quiet = false, markRead = true } = {}) {
       const end = chatDraft.length;
       document.querySelector("#chat-input").setSelectionRange?.(end, end);
     }
-  }
-  const upTo = lastDisplayedMessageId(displayed);
-  if (markRead && upTo && chatIsVisible()) {
-    await markDisplayedMessagesRead(upTo);
   }
   return result;
 }
@@ -504,6 +566,7 @@ async function selectGroup(groupId, { navigate = true } = {}) {
   }
   stopChatPolling();
   stopUnreadPolling();
+  stopChatReadObserver();
   activeGroup = detail.data.group;
   sessionStorage.setItem(ACTIVE_GROUP_KEY, activeGroup.id);
   latestInvite = null;
@@ -511,9 +574,11 @@ async function selectGroup(groupId, { navigate = true } = {}) {
   tasksError = "";
   chatError = "";
   chatDraft = "";
+  chatForceScrollBottom = false;
   unreadCount = null;
   unreadError = "";
   unreadLoading = false;
+  lastReadMessageId = null;
   eventsError = "";
   activityError = "";
   activityFeed = [];
@@ -541,7 +606,7 @@ async function selectGroup(groupId, { navigate = true } = {}) {
   updateGroupChrome();
   await Promise.all([
     loadTasks(),
-    loadMessages({ markRead: false }),
+    loadMessages(),
     loadEvents(),
     loadActivity(),
     loadUnread(),
@@ -617,7 +682,18 @@ function renderApp({ focus = false } = {}) {
   const { page, param } = currentRoute();
   const isCoordinator = activeGroup.role === "coordinator";
 
-  if (page !== "chat") stopChatPolling();
+  if (page !== "chat") {
+    stopChatPolling();
+    stopChatReadObserver();
+  }
+
+  const priorMessages = page === "chat" ? document.querySelector("#messages") : null;
+  const priorScroll = priorMessages
+    ? {
+      stickToBottom: chatForceScrollBottom || isNearBottom(priorMessages),
+      scrollTop: priorMessages.scrollTop,
+    }
+    : null;
 
   const views = {
     dashboard: () => dashboardView(state, today(), sessionUser, {
@@ -679,24 +755,37 @@ function renderApp({ focus = false } = {}) {
 
   if (page === "chat") {
     const list = document.querySelector("#messages");
-    list?.scrollTo?.(0, list.scrollHeight || 99999);
+    if (list) {
+      if (priorScroll) {
+        if (priorScroll.stickToBottom) list.scrollTo(0, list.scrollHeight || 99999);
+        else list.scrollTop = priorScroll.scrollTop;
+      } else {
+        const entryId = initialScrollMessageId(state.messages, lastReadMessageId);
+        if (entryId) {
+          const target = list.querySelector(`[data-message-id="${CSS.escape(entryId)}"]`);
+          if (target) target.scrollIntoView({ block: "start", inline: "nearest" });
+          else list.scrollTo(0, 0);
+        } else {
+          list.scrollTo(0, list.scrollHeight || 99999);
+        }
+      }
+    }
+    chatForceScrollBottom = false;
     startChatPolling();
+    startChatReadObserver();
     const input = document.querySelector("#chat-input");
     if (input && !chatLoading && !chatSending) {
       input.focus();
       const end = input.value.length;
       input.setSelectionRange?.(end, end);
     }
-    const upTo = lastDisplayedMessageId(state.messages);
-    if (upTo && chatIsVisible() && !chatLoading && !chatError) {
-      markDisplayedMessagesRead(upTo).catch(() => {});
-    }
   }
   if (focus) {
     const heading = page === "dashboard" ? "Dashboard" : main.querySelector("h1")?.textContent;
     document.title = `${heading ?? "GroupFlow"} · GroupFlow`;
     main.focus({ preventScroll: true });
-    window.scrollTo(0, 0);
+    // Keep Chat's first-unread / preserved scroller position; do not jump the window.
+    if (page !== "chat") window.scrollTo(0, 0);
   }
 }
 
@@ -868,11 +957,7 @@ async function handleJoinGroup(form) {
 
 function fillAssignees(selected) {
   const select = document.querySelector("#assignee-select");
-  const options = groupMembers.length
-    ? groupMembers.map((m) => `<option value="${m.id}">${m.name}</option>`).join("")
-    : "";
-  select.innerHTML = `<option value="">Unassigned</option>${options}`;
-  select.value = selected ?? "";
+  populateAssigneeSelect(select, groupMembers, selected);
 }
 
 function clearErrors(form) {
@@ -1299,10 +1384,7 @@ main.addEventListener("submit", async (event) => {
     applyMessagesFromServer([...(state.messages ?? []), result.data.message]);
     showToast("Message sent");
     await loadActivity({ quiet: true });
-    const upTo = lastDisplayedMessageId(state.messages);
-    if (upTo && chatIsVisible()) {
-      await markDisplayedMessagesRead(upTo);
-    }
+    chatForceScrollBottom = true;
   } catch {
     chatDraft = text;
     chatSendError = "Could not reach the server. Your text was kept.";
@@ -1374,9 +1456,11 @@ logoutButton.addEventListener("click", async () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (!chatIsVisible() || !state?.messages?.length) return;
-  const upTo = lastDisplayedMessageId(state.messages);
-  if (upTo) markDisplayedMessagesRead(upTo).catch(() => {});
+  if (document.visibilityState !== "visible") return;
+  if (currentRoute().page !== "chat" || !activeGroup) return;
+  // Re-observe and mark only what is actually in the chat viewport.
+  startChatReadObserver();
+  scheduleMarkVisibleRead();
 });
 
 async function boot() {

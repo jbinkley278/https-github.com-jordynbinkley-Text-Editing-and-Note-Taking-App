@@ -1,4 +1,4 @@
-import { ACTIONS, recordActivity } from "../activity/service.js";
+import { ACTIONS, recordActivityBestEffort } from "../activity/service.js";
 import { asObjectId, requireMembership } from "../groups/service.js";
 
 export async function ensureEventIndexes(db) {
@@ -59,7 +59,7 @@ export async function createEvent(db, groupIdRaw, user, fields) {
   };
   const result = await db.collection("events").insertOne(doc);
   const event = { ...doc, _id: result.insertedId };
-  await recordActivity(db, {
+  await recordActivityBestEffort(db, {
     groupId: group._id,
     actor: user,
     action: ACTIONS.EVENT_CREATED,
@@ -92,7 +92,7 @@ export async function updateEvent(db, groupIdRaw, eventIdRaw, user, fields) {
     (key) => key in fields && JSON.stringify(updated[key]) !== JSON.stringify(existing[key]),
   );
   if (changed) {
-    await recordActivity(db, {
+    await recordActivityBestEffort(db, {
       groupId: group._id,
       actor: user,
       action: ACTIONS.EVENT_UPDATED,
@@ -116,7 +116,7 @@ export async function deleteEvent(db, groupIdRaw, eventIdRaw, user) {
     throw error;
   }
   await db.collection("events").deleteOne({ _id: eventId, groupId: group._id });
-  await recordActivity(db, {
+  await recordActivityBestEffort(db, {
     groupId: group._id,
     actor: user,
     action: ACTIONS.EVENT_DELETED,

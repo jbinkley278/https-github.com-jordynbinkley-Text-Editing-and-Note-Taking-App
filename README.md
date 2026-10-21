@@ -84,7 +84,7 @@ Integration tests fail fast if `MONGODB_URI_TEST` is missing or unsafe — befor
 | Calendar | Month view: task due dates (date-only) + team meetings (MongoDB; optional time + IANA zone) | FR-09 |
 | Chat | Group messages in MongoDB; open chat polls ~every 3s | FR-10 |
 | Unread | Per-user read cursor; unread counts on dashboard / nav (not full notification center) | FR-04 (partial vs FR-11) |
-| Activity | Contribution / activity feed and summary for the active group | FR-13 |
+| Activity | Best-effort contribution feed/summary after mutations (not atomic; totals may be incomplete) | FR-13 |
 | Profiles | Member profile views (no password hashes exposed) | FR-14 |
 | Dashboard / progress | Open tasks, due this week, progress, unread, upcoming deadlines, recent activity | — |
 | Health | `/api/health` + static hosting of the UI | — |

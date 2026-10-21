@@ -1,7 +1,11 @@
+import { ObjectId } from "mongodb";
 import { asObjectId, requireMembership } from "../groups/service.js";
 
 /**
  * Per-user, per-group chat read cursor.
+ *
+ * Ordering matches listMessages / Mongo unread filters: (createdAt ascending, _id ascending).
+ * ObjectId ties use BSON byte order (same as MongoDB $gt on _id), not JS object coercion.
  *
  * Policy for existing history / newly joined members:
  * - Until a read position exists, every message from other members counts as unread
@@ -18,7 +22,17 @@ export async function ensureReadPositionIndexes(db) {
   );
 }
 
-function isAfterCursor(message, cursor) {
+/**
+ * Compare ObjectIds with MongoDB BSON ordering (byte-wise).
+ * @returns {number} negative if a < b, 0 if equal, positive if a > b
+ */
+export function compareObjectIds(a, b) {
+  const left = a instanceof ObjectId ? a : new ObjectId(a);
+  const right = b instanceof ObjectId ? b : new ObjectId(b);
+  return Buffer.compare(Buffer.from(left.id), Buffer.from(right.id));
+}
+
+export function isAfterCursor(message, cursor) {
   if (!cursor?.lastReadMessageId || !cursor?.lastReadAt) return true;
   const createdAt = message.createdAt instanceof Date
     ? message.createdAt
@@ -28,7 +42,7 @@ function isAfterCursor(message, cursor) {
     : new Date(cursor.lastReadAt);
   if (createdAt > cursorAt) return true;
   if (createdAt < cursorAt) return false;
-  return message._id > cursor.lastReadMessageId;
+  return compareObjectIds(message._id, cursor.lastReadMessageId) > 0;
 }
 
 function isSameOrBeforeCursor(message, cursor) {
@@ -100,5 +114,3 @@ export async function markMessagesRead(db, groupIdRaw, userId, upToMessageIdRaw)
 
   return countUnreadMessages(db, groupIdRaw, userId);
 }
-
-export { isAfterCursor };

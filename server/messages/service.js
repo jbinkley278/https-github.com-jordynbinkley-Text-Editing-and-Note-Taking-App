@@ -1,4 +1,4 @@
-import { ACTIONS, recordActivity } from "../activity/service.js";
+import { ACTIONS, recordActivityBestEffort } from "../activity/service.js";
 import { asObjectId, requireMembership } from "../groups/service.js";
 
 export async function ensureMessageIndexes(db) {
@@ -44,7 +44,7 @@ export async function createMessage(db, groupIdRaw, user, { text }) {
   };
   const result = await db.collection("messages").insertOne(doc);
   const message = { ...doc, _id: result.insertedId };
-  await recordActivity(db, {
+  await recordActivityBestEffort(db, {
     groupId: group._id,
     actor: user,
     action: ACTIONS.MESSAGE_SENT,

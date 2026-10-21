@@ -1,6 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Collection } from "mongodb";
 import { withServer } from "./helpers.mjs";
+
+/**
+ * Temporarily fail activity inserts (optionally only for specific actions).
+ * Restores Collection.prototype.insertOne in finally.
+ */
+async function withFailingActivityInserts(failActions, run) {
+  const original = Collection.prototype.insertOne;
+  const attempted = [];
+  Collection.prototype.insertOne = async function patchedInsertOne(doc, options) {
+    if (this.collectionName === "activity") {
+      attempted.push(doc?.action ?? null);
+      const shouldFail = failActions === true
+        || (Array.isArray(failActions) && failActions.includes(doc?.action));
+      if (shouldFail) {
+        const err = new Error("simulated activity insert failure");
+        err.code = "TEST_ACTIVITY_FAIL";
+        throw err;
+      }
+    }
+    return original.call(this, doc, options);
+  };
+  try {
+    return await run({ attempted });
+  } finally {
+    Collection.prototype.insertOne = original;
+  }
+}
 
 async function johnMarkGroup(request, cookieJar) {
   const john = await request("/api/auth/register", {
@@ -160,7 +188,9 @@ test("contribution summary counts actions per member without inventing history",
     const empty = await request(`/api/groups/${groupId}/activity/summary`);
     assert.equal(empty.status, 200);
     assert.match(empty.data.summary.measureNote, /not a measure of effort/i);
+    assert.match(empty.data.summary.measureNote, /best-effort|may be incomplete/i);
     assert.match(empty.data.summary.trackedSinceNote, /not backfilled/i);
+    assert.match(empty.data.summary.trackedSinceNote, /best-effort|not guaranteed/i);
     const johnEmpty = empty.data.summary.members.find((m) => m.userId === johnId);
     assert.equal(johnEmpty.total, 0);
 
@@ -234,5 +264,95 @@ test("activity endpoints enforce auth and cross-group isolation", async () => {
     const anon = cookieJar();
     const unauth = await request(`/api/groups/${groupId}/activity`, { jar: anon });
     assert.equal(unauth.status, 401);
+  });
+});
+
+test("activity failure after create still returns the saved resource (not 500)", async () => {
+  await withServer(async ({ request, cookieJar, db }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar);
+    const before = await db.collection("activity").countDocuments({});
+
+    await withFailingActivityInserts(true, async () => {
+      const created = await request(`/api/groups/${groupId}/tasks`, {
+        method: "POST",
+        body: {
+          title: "Saved despite activity outage",
+          dueDate: "2026-12-01",
+          status: "todo",
+          priority: "medium",
+        },
+      });
+      assert.equal(created.status, 201, created.data.error);
+      assert.equal(created.data.task.title, "Saved despite activity outage");
+      assert.ok(created.data.task.id);
+
+      const listed = await request(`/api/groups/${groupId}/tasks`);
+      assert.equal(listed.status, 200);
+      assert.ok(listed.data.tasks.some((t) => t.id === created.data.task.id));
+    });
+
+    assert.equal(await db.collection("activity").countDocuments({}), before);
+  });
+});
+
+test("failed primary writes still fail and produce no activity", async () => {
+  await withServer(async ({ request, cookieJar, db }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar);
+    const beforeTasks = await db.collection("tasks").countDocuments({});
+    const beforeActivity = await db.collection("activity").countDocuments({});
+
+    await withFailingActivityInserts(true, async () => {
+      const bad = await request(`/api/groups/${groupId}/tasks`, {
+        method: "POST",
+        body: { title: "  ", dueDate: "2026-12-02" },
+      });
+      assert.equal(bad.status, 400);
+    });
+
+    assert.equal(await db.collection("tasks").countDocuments({}), beforeTasks);
+    assert.equal(await db.collection("activity").countDocuments({}), beforeActivity);
+  });
+});
+
+test("multi-entry task updates attempt remaining activity entries after one fails", async () => {
+  await withServer(async ({ request, cookieJar, db }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+    const created = await request(`/api/groups/${groupId}/tasks`, {
+      method: "POST",
+      body: {
+        title: "Multi activity",
+        dueDate: "2026-12-03",
+        status: "todo",
+        priority: "low",
+      },
+    });
+    assert.equal(created.status, 201);
+    const taskId = created.data.task.id;
+    const before = await db.collection("activity").countDocuments({});
+
+    await withFailingActivityInserts(["task.status_changed"], async ({ attempted }) => {
+      const updated = await request(`/api/groups/${groupId}/tasks/${taskId}`, {
+        method: "PATCH",
+        body: { status: "progress", description: "also edited" },
+        jar: markJar,
+      });
+      assert.equal(updated.status, 200, updated.data.error);
+      assert.equal(updated.data.task.status, "progress");
+      assert.equal(updated.data.task.description, "also edited");
+
+      assert.ok(attempted.includes("task.status_changed"));
+      assert.ok(attempted.includes("task.updated"));
+    });
+
+    const afterFeed = await request(`/api/groups/${groupId}/activity`);
+    const statusEntry = afterFeed.data.activity.find(
+      (a) => a.action === "task.status_changed" && a.entityId === taskId,
+    );
+    const updateEntry = afterFeed.data.activity.find(
+      (a) => a.action === "task.updated" && a.entityId === taskId,
+    );
+    assert.equal(statusEntry, undefined, "failed status activity must be absent");
+    assert.ok(updateEntry, "task.updated must still be recorded");
+    assert.ok(await db.collection("activity").countDocuments({}) > before);
   });
 });

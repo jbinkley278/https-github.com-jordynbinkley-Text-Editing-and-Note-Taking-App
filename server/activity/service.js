@@ -27,10 +27,10 @@ export const ACTION_LABELS = {
 };
 
 export const ACTIVITY_MEASURE_NOTE =
-  "Totals count recorded GroupFlow actions (creates, edits, status moves, messages, meetings). They are not a measure of effort, quality, or work done outside the app.";
+  "Totals count recorded GroupFlow actions when activity logging succeeds (creates, edits, status moves, messages, meetings). Activity is best-effort after mutations—not atomic or guaranteed—so contribution totals may be incomplete. They are not a measure of effort, quality, or work done outside the app.";
 
 export const ACTIVITY_TRACKED_NOTE =
-  "Activity tracking began with this feature. Older actions were not backfilled.";
+  "Activity tracking began with this feature. Older actions were not backfilled. Logging is best-effort after successful mutations and is not guaranteed.";
 
 export async function ensureActivityIndexes(db) {
   await db.collection("activity").createIndex({ groupId: 1, createdAt: -1 });
@@ -87,6 +87,31 @@ export async function recordActivity(db, {
   };
   const result = await db.collection("activity").insertOne(doc);
   return publicActivity({ ...doc, _id: result.insertedId });
+}
+
+/**
+ * Best-effort activity write after a successful primary mutation.
+ * Never throws: failures are logged without message bodies, credentials, or request payloads.
+ * No automatic retries (ambiguous inserts could duplicate activity rows).
+ * @returns {Promise<object | null>} public activity on success, otherwise null
+ */
+export async function recordActivityBestEffort(db, payload) {
+  try {
+    return await recordActivity(db, payload);
+  } catch (error) {
+    const entityId = payload?.entityId != null
+      ? String(normalizeEntityId(payload.entityId) ?? payload.entityId)
+      : null;
+    console.error("Activity log failed (best-effort; primary mutation already saved)", {
+      action: payload?.action ?? null,
+      entityType: payload?.entityType ?? null,
+      entityId,
+      groupId: payload?.groupId != null ? String(payload.groupId) : null,
+      error: error instanceof Error ? error.message : String(error),
+      ...(error?.code != null ? { errorCode: String(error.code) } : {}),
+    });
+    return null;
+  }
 }
 
 export async function listActivity(db, groupIdRaw, userId, { limit = 50, actorId = null } = {}) {
