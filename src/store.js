@@ -1,7 +1,11 @@
-// Local data layer for GroupFlow. Everything lives in localStorage for now;
-// once the API (I-04) is ready these functions get swapped for fetch calls.
+// Shared helpers for GroupFlow views.
+// Real-group tasks load/save through the Express/MongoDB API (see src/api.js).
+// STORAGE_KEY seed data is a preserved local prototype only — never auto-imported.
+// Shared tasks, chat, and calendar meetings use the API. Prototype seed stays separate.
 
 export const STORAGE_KEY = "groupflow.state.v1";
+/** sessionStorage key for the selected MongoDB group (cleared on logout). */
+export const ACTIVE_GROUP_KEY = "gf.activeGroupId";
 export const STATUSES = ["todo", "progress", "done"];
 export const STATUS_LABELS = { todo: "To Do", progress: "In Progress", done: "Done" };
 export const PRIORITIES = ["low", "medium", "high"];
@@ -22,6 +26,28 @@ export function addDays(dateKey, days) {
   return toDateKey(new Date(y, m - 1, d + days));
 }
 
+/**
+ * Empty in-memory workspace for a real MongoDB group.
+ * Does not copy demo members/tasks/messages and must not be written to STORAGE_KEY.
+ */
+export function emptyWorkspaceState(group, sessionUserId = null) {
+  return {
+    currentUserId: sessionUserId,
+    group: {
+      id: group.id,
+      name: group.name,
+      description: group.description ?? "",
+    },
+    members: [],
+    tasks: [],
+    events: [],
+    messages: [],
+    activity: [],
+    lastReadChat: null,
+    source: "mongodb-group",
+  };
+}
+
 export function seedState(today = toDateKey(new Date())) {
   const members = [
     { id: "tobi", name: "Tobi Akere", role: "Team Coordinator" },
@@ -36,6 +62,7 @@ export function seedState(today = toDateKey(new Date())) {
   return {
     currentUserId: "brandon",
     group: { id: "group-6", name: "CSCE 3444 Group 6", description: "GroupFlow semester project" },
+    source: "local-prototype",
     members,
     tasks: [
       task("Build calendar page", "tobi", "todo", "medium", 4),
@@ -167,15 +194,47 @@ export function upcoming(state, today, days = 7) {
     .map((t) => ({ kind: "task", id: t.id, title: t.title, date: t.dueDate, overdue: t.dueDate < today }));
   const events = state.events
     .filter((e) => e.date >= today && e.date <= limit)
-    .map((e) => ({ kind: "event", id: e.id, title: e.title, date: e.date, overdue: false }));
-  return [...tasks, ...events].sort((a, b) => a.date.localeCompare(b.date));
+    .map((e) => ({
+      kind: "event",
+      id: e.id,
+      title: e.title,
+      date: e.date,
+      startTime: e.startTime ?? null,
+      timeZone: e.timeZone || "UTC",
+      overdue: false,
+    }));
+  return [...tasks, ...events].sort((a, b) => {
+    const byDate = a.date.localeCompare(b.date);
+    if (byDate !== 0) return byDate;
+    const aTime = a.startTime || "99:99";
+    const bTime = b.startTime || "99:99";
+    return aTime.localeCompare(bTime);
+  });
 }
 
 export function itemsByDate(state, monthPrefix) {
   const map = new Map();
   const push = (date, item) => map.set(date, [...(map.get(date) ?? []), item]);
-  state.tasks.filter((t) => t.dueDate.startsWith(monthPrefix)).forEach((t) => push(t.dueDate, { kind: "task", title: t.title, done: t.status === "done" }));
-  state.events.filter((e) => e.date.startsWith(monthPrefix)).forEach((e) => push(e.date, { kind: "event", title: e.title }));
+  state.tasks
+    .filter((t) => t.dueDate.startsWith(monthPrefix))
+    .forEach((t) => push(t.dueDate, {
+      kind: "task",
+      id: t.id,
+      title: t.title,
+      done: t.status === "done",
+      date: t.dueDate,
+    }));
+  state.events
+    .filter((e) => e.date.startsWith(monthPrefix))
+    .forEach((e) => push(e.date, {
+      kind: "event",
+      id: e.id,
+      title: e.title,
+      date: e.date,
+      startTime: e.startTime ?? null,
+      timeZone: e.timeZone || "UTC",
+      description: e.description ?? "",
+    }));
   return map;
 }
 
