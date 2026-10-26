@@ -11,16 +11,18 @@
     "dev": "node --watch server/index.js",
     "test:safety": "node --test test/mongoTestUri.test.mjs",
     "test": "node --test test/mongoTestUri.test.mjs && node --test --test-concurrency=1 test/*.test.mjs",
-    "check": "node --check src/api.js && node --check src/app.js && node --check src/assigneeSelect.js && node --check src/chatReadPolicy.js && node --check src/store.js && node --check src/views.js && node --check server/config.js && node --check server/db.js && node --check server/dbRetry.js && node --check server/app.js && node --check server/index.js && node --check server/middleware/auth.js && node --check server/auth/validation.js && node --check server/auth/passwords.js && node --check server/auth/sessions.js && node --check server/auth/routes.js && node --check server/groups/roles.js && node --check server/groups/validation.js && node --check server/groups/service.js && node --check server/groups/routes.js && node --check server/tasks/validation.js && node --check server/tasks/service.js && node --check server/tasks/routes.js && node --check server/messages/validation.js && node --check server/messages/service.js && node --check server/messages/readPosition.js && node --check server/messages/routes.js && node --check server/events/validation.js && node --check server/events/service.js && node --check server/events/routes.js && node --check server/activity/service.js && node --check server/activity/routes.js && node --check server/profiles/service.js && node --check test/mongoTestUri.mjs && node --check test/helpers.mjs"
+    "check": "node --check src/api.js && node --check src/app.js && node --check src/assigneeSelect.js && node --check src/chatReadPolicy.js && node --check src/store.js && node --check src/views.js && node --check server/config.js && node --check server/db.js && node --check server/dbRetry.js && node --check server/app.js && node --check server/index.js && node --check server/middleware/auth.js && node --check server/auth/validation.js && node --check server/auth/passwords.js && node --check server/auth/sessions.js && node --check server/auth/turnstile.js && node --check server/auth/registrationCodes.js && node --check server/auth/pendingRegistrations.js && node --check server/auth/routes.js && node --check server/email/adapter.js && node --check server/groups/roles.js && node --check server/groups/validation.js && node --check server/groups/service.js && node --check server/groups/routes.js && node --check server/tasks/validation.js && node --check server/tasks/service.js && node --check server/tasks/routes.js && node --check server/messages/validation.js && node --check server/messages/fileTypes.js && node --check server/messages/multipart.js && node --check server/messages/attachments.js && node --check server/messages/attachmentRoutes.js && node --check server/messages/service.js && node --check server/messages/readPosition.js && node --check server/messages/routes.js && node --check server/events/validation.js && node --check server/events/service.js && node --check server/events/routes.js && node --check server/activity/service.js && node --check server/activity/routes.js && node --check server/profiles/service.js && node --check test/mongoTestUri.mjs && node --check test/helpers.mjs && node --check test/turnstile.test.mjs && node --check test/attachments.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "busboy": "^1.6.0",
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "mongodb": "^6.12.0"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6"
+    "@types/bcryptjs": "^2.4.6",
+    "@types/busboy": "^1.5.5"
   }
 }

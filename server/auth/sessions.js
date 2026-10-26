@@ -15,6 +15,8 @@ export function publicUser(doc) {
     id: String(doc._id),
     name: doc.name,
     email: doc.email,
+    // Missing emailVerified means grandfathered (pre-verification) accounts.
+    emailVerified: doc.emailVerified !== false,
   };
 }
 

@@ -2,16 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withServer } from "./helpers.mjs";
 
-async function twoMemberGroup(request, cookieJar) {
-  const john = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "John Chat",
-      email: `john_chat_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-  });
-  assert.equal(john.status, 201);
+async function twoMemberGroup(request, cookieJar, register) {
+  const john = await register("John Chat");
 
   const group = await request("/api/groups", {
     method: "POST",
@@ -27,16 +19,7 @@ async function twoMemberGroup(request, cookieJar) {
   assert.equal(invite.status, 201);
 
   const markJar = cookieJar();
-  const mark = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "Mark Chat",
-      email: `mark_chat_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-    jar: markJar,
-  });
-  assert.equal(mark.status, 201);
+  const mark = await register("Mark Chat", { jar: markJar });
   const joined = await request("/api/groups/join", {
     method: "POST",
     body: { code: invite.data.invitation.code },
@@ -46,15 +29,15 @@ async function twoMemberGroup(request, cookieJar) {
 
   return {
     groupId,
-    johnId: john.data.user.id,
-    markId: mark.data.user.id,
+    johnId: john.user.id,
+    markId: mark.user.id,
     markJar,
   };
 }
 
 test("messages persist with sender identity and chronological order", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, johnId, markId, markJar } = await twoMemberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, johnId, markId, markJar } = await twoMemberGroup(request, cookieJar, register);
 
     const first = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
@@ -89,8 +72,8 @@ test("messages persist with sender identity and chronological order", async () =
 });
 
 test("blank and invalid messages are rejected", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await twoMemberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await twoMemberGroup(request, cookieJar, register);
 
     const blank = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
@@ -117,8 +100,8 @@ test("blank and invalid messages are rejected", async () => {
 });
 
 test("unauthenticated chat access is rejected", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await twoMemberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await twoMemberGroup(request, cookieJar, register);
     const anon = cookieJar();
     const listed = await request(`/api/groups/${groupId}/messages`, { jar: anon });
     assert.equal(listed.status, 401);
@@ -132,23 +115,15 @@ test("unauthenticated chat access is rejected", async () => {
 });
 
 test("cross-group chat isolation is enforced", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await twoMemberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await twoMemberGroup(request, cookieJar, register);
     await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
       body: { text: "Private to Chat Lab" },
     });
 
     const otherJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Other Owner",
-        email: `other_chat_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: otherJar,
-    });
+    await register("Other Owner", { jar: otherJar, email: `other_chat_${Date.now()}@example.com` });
     const otherGroup = await request("/api/groups", {
       method: "POST",
       body: { name: "Other Chat Group" },
@@ -163,23 +138,15 @@ test("cross-group chat isolation is enforced", async () => {
     assert.equal(otherList.data.messages.length, 0);
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Stranger",
-        email: `stranger_chat_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Stranger", { jar: outsiderJar, email: `stranger_chat_${Date.now()}@example.com` });
     const forbidden = await request(`/api/groups/${groupId}/messages`, { jar: outsiderJar });
     assert.equal(forbidden.status, 403);
   });
 });
 
 test("client cannot impersonate another sender via request body", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, johnId, markId, markJar } = await twoMemberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, johnId, markId, markJar } = await twoMemberGroup(request, cookieJar, register);
     const forged = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
       body: { text: "Forged as John", senderId: johnId, senderName: "John Chat" },

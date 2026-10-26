@@ -2,16 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withServer } from "./helpers.mjs";
 
-async function createGroupWithMember(request, cookieJar) {
-  const coordinator = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "John Coordinator",
-      email: `john_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-  });
-  assert.equal(coordinator.status, 201);
+async function createGroupWithMember(request, cookieJar, register) {
+  const coordinator = await register("John Coordinator");
 
   const group = await request("/api/groups", {
     method: "POST",
@@ -27,16 +19,7 @@ async function createGroupWithMember(request, cookieJar) {
   assert.equal(invite.status, 201);
 
   const memberJar = cookieJar();
-  const member = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "Mark Member",
-      email: `mark_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-    jar: memberJar,
-  });
-  assert.equal(member.status, 201);
+  const member = await register("Mark Member", { jar: memberJar });
 
   const joined = await request("/api/groups/join", {
     method: "POST",
@@ -47,15 +30,15 @@ async function createGroupWithMember(request, cookieJar) {
 
   return {
     groupId,
-    coordinatorId: coordinator.data.user.id,
-    memberId: member.data.user.id,
+    coordinatorId: coordinator.user.id,
+    memberId: member.user.id,
     memberJar,
   };
 }
 
 test("task CRUD, status change, and subtask updates persist for group members", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, memberId, memberJar } = await createGroupWithMember(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, memberId, memberJar } = await createGroupWithMember(request, cookieJar, register);
 
     const created = await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
@@ -118,25 +101,17 @@ test("task CRUD, status change, and subtask updates persist for group members", 
 });
 
 test("invalid assignee is rejected", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await createGroupWithMember(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await createGroupWithMember(request, cookieJar, register);
     const outsiderJar = cookieJar();
-    const outsider = await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Outsider",
-        email: `out_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    const outsider = await register("Outsider", { jar: outsiderJar, email: `out_${Date.now()}@example.com` });
 
     const bad = await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
       body: {
         title: "Bad assignee",
         dueDate: "2026-10-25",
-        assignee: outsider.data.user.id,
+        assignee: outsider.user.id,
       },
     });
     assert.equal(bad.status, 400);
@@ -145,8 +120,8 @@ test("invalid assignee is rejected", async () => {
 });
 
 test("unauthenticated task access is rejected", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await createGroupWithMember(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await createGroupWithMember(request, cookieJar, register);
     const anon = cookieJar();
     const listed = await request(`/api/groups/${groupId}/tasks`, { jar: anon });
     assert.equal(listed.status, 401);
@@ -161,8 +136,8 @@ test("unauthenticated task access is rejected", async () => {
 });
 
 test("cross-group task access by id is denied", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const first = await createGroupWithMember(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const first = await createGroupWithMember(request, cookieJar, register);
     const created = await request(`/api/groups/${first.groupId}/tasks`, {
       method: "POST",
       body: { title: "Secret task", dueDate: "2026-10-25", status: "todo" },
@@ -171,15 +146,7 @@ test("cross-group task access by id is denied", async () => {
     const taskId = created.data.task.id;
 
     const otherJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Other Owner",
-        email: `other_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: otherJar,
-    });
+    await register("Other Owner", { jar: otherJar, email: `other_${Date.now()}@example.com` });
     const otherGroup = await request("/api/groups", {
       method: "POST",
       body: { name: "Other Group" },
@@ -193,15 +160,7 @@ test("cross-group task access by id is denied", async () => {
     assert.equal(leak.status, 404);
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Stranger",
-        email: `stranger_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Stranger", { jar: outsiderJar, email: `stranger_${Date.now()}@example.com` });
     const forbidden = await request(`/api/groups/${first.groupId}/tasks/${taskId}`, {
       jar: outsiderJar,
     });

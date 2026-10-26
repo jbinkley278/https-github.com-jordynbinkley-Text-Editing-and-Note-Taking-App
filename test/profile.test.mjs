@@ -2,16 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withServer } from "./helpers.mjs";
 
-async function johnMarkGroup(request, cookieJar) {
-  const john = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "John Profile",
-      email: `john_prof_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-  });
-  assert.equal(john.status, 201);
+async function johnMarkGroup(request, cookieJar, register) {
+  const john = await register("John Profile");
   const group = await request("/api/groups", {
     method: "POST",
     body: { name: "Profile Lab" },
@@ -22,16 +14,7 @@ async function johnMarkGroup(request, cookieJar) {
     body: {},
   });
   const markJar = cookieJar();
-  const mark = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "Mark Profile",
-      email: `mark_prof_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-    jar: markJar,
-  });
-  assert.equal(mark.status, 201);
+  const mark = await register("Mark Profile", { jar: markJar });
   await request("/api/groups/join", {
     method: "POST",
     body: { code: invite.data.invitation.code },
@@ -39,15 +22,15 @@ async function johnMarkGroup(request, cookieJar) {
   });
   return {
     groupId: group.data.group.id,
-    johnId: john.data.user.id,
-    markId: mark.data.user.id,
+    johnId: john.user.id,
+    markId: mark.user.id,
     markJar,
   };
 }
 
 test("member profile returns identity, role, assignments, contribution, and recent activity", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, johnId, markId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, johnId, markId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const forMark = await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
@@ -105,23 +88,15 @@ test("member profile returns identity, role, assignments, contribution, and rece
 });
 
 test("profile access requires auth and group membership; non-members are not exposed", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, markId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, markId } = await johnMarkGroup(request, cookieJar, register);
 
     const anon = cookieJar();
     const unauth = await request(`/api/groups/${groupId}/members/${markId}`, { jar: anon });
     assert.equal(unauth.status, 401);
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Outsider",
-        email: `out_prof_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Outsider", { jar: outsiderJar, email: `out_prof_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com` });
     const denied = await request(`/api/groups/${groupId}/members/${markId}`, { jar: outsiderJar });
     assert.equal(denied.status, 403);
 
@@ -142,8 +117,8 @@ test("profile access requires auth and group membership; non-members are not exp
 });
 
 test("profile mutations are rejected and cannot grant coordinator role", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId, markId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId, markId } = await johnMarkGroup(request, cookieJar, register);
 
     const patched = await request(`/api/groups/${groupId}/members/${markId}`, {
       method: "PATCH",
@@ -169,8 +144,8 @@ test("profile mutations are rejected and cannot grant coordinator role", async (
 });
 
 test("member list responses omit password hashes", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar, register);
     const listed = await request(`/api/groups/${groupId}/members`);
     assert.equal(listed.status, 200);
     for (const member of listed.data.members) {

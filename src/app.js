@@ -11,21 +11,26 @@ import {
   fetchUnreadCount,
   joinGroup,
   createEvent as createEventRequest,
+  deleteAttachment,
   deleteEvent as deleteEventRequest,
   listActivity,
   listEvents,
   listGroups,
   listMessages,
   listTasks,
+  fetchRegistrationConfig,
   loginUser,
   logoutUser,
   markMessagesRead as markMessagesReadRequest,
   previewInvitation,
   registerUser,
+  resendVerificationCode,
   revokeInvitation,
   sendMessage,
   updateEvent as updateEventRequest,
   updateTask as updateTaskRequest,
+  uploadAttachment,
+  verifyEmail,
 } from "./api.js";
 import {
   ACTIVE_GROUP_KEY,
@@ -78,6 +83,10 @@ let chatError = "";
 let chatSendError = "";
 let chatSending = false;
 let chatDraft = "";
+/** @type {File | null} */
+let chatPendingFile = null;
+/** @type {number | null} */
+let chatUploadProgress = null;
 /** @type {ReturnType<typeof setInterval> | null} */
 let chatPollTimer = null;
 /** @type {ReturnType<typeof setInterval> | null} */
@@ -157,7 +166,84 @@ function currentRoute() {
 }
 
 function isAuthRoute(page) {
-  return page === "login" || page === "register";
+  return page === "login" || page === "register" || page === "verify";
+}
+
+const PENDING_REG_KEY = "gf.pendingRegistration";
+let pendingRegistration = null;
+let registrationConfigCache = null;
+let turnstileWidgetId = null;
+let resendCooldownTimer = null;
+
+function loadPendingRegistration() {
+  if (pendingRegistration) return pendingRegistration;
+  try {
+    const raw = sessionStorage.getItem(PENDING_REG_KEY);
+    if (!raw) return null;
+    pendingRegistration = JSON.parse(raw);
+    return pendingRegistration;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingRegistration(pending) {
+  pendingRegistration = pending;
+  if (pending) sessionStorage.setItem(PENDING_REG_KEY, JSON.stringify(pending));
+  else sessionStorage.removeItem(PENDING_REG_KEY);
+}
+
+function clearResendCooldownTimer() {
+  if (resendCooldownTimer) {
+    clearInterval(resendCooldownTimer);
+    resendCooldownTimer = null;
+  }
+}
+
+function resendButtonState(pending) {
+  const availableAt = pending?.resendAvailableAt ? Date.parse(pending.resendAvailableAt) : 0;
+  const remainingMs = Math.max(0, availableAt - Date.now());
+  if (remainingMs <= 0) {
+    return { resendLabel: "Resend code", resendDisabled: false };
+  }
+  const seconds = Math.ceil(remainingMs / 1000);
+  return {
+    resendLabel: `Resend code (${seconds}s)`,
+    resendDisabled: true,
+  };
+}
+
+function mountTurnstile() {
+  const host = document.querySelector("#cf-turnstile");
+  if (!host || !window.turnstile) return;
+  if (turnstileWidgetId != null) {
+    try { window.turnstile.remove(turnstileWidgetId); } catch { /* ignore */ }
+    turnstileWidgetId = null;
+  }
+  const sitekey = host.dataset.sitekey;
+  if (!sitekey) return;
+  turnstileWidgetId = window.turnstile.render(host, {
+    sitekey,
+    action: "register",
+  });
+}
+
+function readTurnstileToken() {
+  if (window.turnstile && turnstileWidgetId != null) {
+    try {
+      return window.turnstile.getResponse(turnstileWidgetId) || "";
+    } catch {
+      return "";
+    }
+  }
+  const input = document.querySelector('[name="cf-turnstile-response"]');
+  return input?.value ?? "";
+}
+
+function resetTurnstile() {
+  if (window.turnstile && turnstileWidgetId != null) {
+    try { window.turnstile.reset(turnstileWidgetId); } catch { /* ignore */ }
+  }
 }
 
 function stopChatPolling() {
@@ -201,6 +287,8 @@ function clearGroupState() {
   chatSendError = "";
   chatSending = false;
   chatDraft = "";
+  chatPendingFile = null;
+  chatUploadProgress = null;
   chatForceScrollBottom = false;
   unreadCount = null;
   unreadLoading = false;
@@ -574,6 +662,8 @@ async function selectGroup(groupId, { navigate = true } = {}) {
   tasksError = "";
   chatError = "";
   chatDraft = "";
+  chatPendingFile = null;
+  chatUploadProgress = null;
   chatForceScrollBottom = false;
   unreadCount = null;
   unreadError = "";
@@ -625,11 +715,69 @@ async function restoreActiveGroup() {
   if (!result.ok) clearGroupState();
 }
 
+async function ensureRegistrationConfig() {
+  if (registrationConfigCache) return registrationConfigCache;
+  const result = await fetchRegistrationConfig();
+  if (result.ok) registrationConfigCache = result.data;
+  else {
+    registrationConfigCache = {
+      registrationReady: false,
+      turnstileConfigured: false,
+      emailConfigured: false,
+      turnstileSiteKey: null,
+      emailError: result.data.error ?? "Could not load registration configuration.",
+    };
+  }
+  return registrationConfigCache;
+}
+
 function renderAuth(mode, extras = {}) {
-  main.innerHTML = authView(mode, extras);
-  document.title = `${mode === "register" ? "Register" : "Sign in"} · GroupFlow`;
+  clearResendCooldownTimer();
+  const pending = extras.pending ?? loadPendingRegistration();
+  const resendState = mode === "verify" ? resendButtonState(pending) : {};
+  main.innerHTML = authView(mode, {
+    ...extras,
+    pending,
+    registrationConfig: extras.registrationConfig ?? registrationConfigCache,
+    ...resendState,
+  });
+  const titles = { register: "Register", verify: "Verify email", login: "Sign in" };
+  document.title = `${titles[mode] ?? "Sign in"} · GroupFlow`;
   main.focus({ preventScroll: true });
-  document.querySelector("#auth-form")?.elements?.[mode === "register" ? "name" : "email"]?.focus();
+
+  if (mode === "register") {
+    // Explicit Turnstile render after the API script may already be loaded.
+    if (window.turnstile) mountTurnstile();
+    else {
+      const started = Date.now();
+      const wait = setInterval(() => {
+        if (window.turnstile) {
+          clearInterval(wait);
+          mountTurnstile();
+        } else if (Date.now() - started > 8000) {
+          clearInterval(wait);
+        }
+      }, 100);
+    }
+    document.querySelector("#auth-form")?.elements?.name?.focus();
+  } else if (mode === "verify") {
+    document.querySelector("#auth-form")?.elements?.code?.focus();
+    if (resendState.resendDisabled) {
+      resendCooldownTimer = setInterval(() => {
+        const btn = document.querySelector("#resend-code-btn");
+        if (!btn) {
+          clearResendCooldownTimer();
+          return;
+        }
+        const next = resendButtonState(loadPendingRegistration());
+        btn.textContent = next.resendLabel;
+        btn.disabled = next.resendDisabled;
+        if (!next.resendDisabled) clearResendCooldownTimer();
+      }, 1000);
+    }
+  } else {
+    document.querySelector("#auth-form")?.elements?.email?.focus();
+  }
 }
 
 async function renderGroupsHome({ error = "" } = {}) {
@@ -721,6 +869,9 @@ function renderApp({ focus = false } = {}) {
       sending: chatSending,
       draft: chatDraft,
       sessionUserId: sessionUser?.id ?? "",
+      groupId: activeGroup?.id ?? "",
+      pendingFileName: chatPendingFile?.name ?? "",
+      uploadProgress: chatUploadProgress,
     }),
     progress: () => progressView(state, {
       summary: activitySummary,
@@ -793,9 +944,28 @@ async function render({ focus = false } = {}) {
   const { page, param } = currentRoute();
 
   if (!sessionUser) {
-    const mode = page === "register" ? "register" : "login";
     if (!isAuthRoute(page)) history.replaceState(null, "", "#/login");
-    renderAuth(mode);
+    const route = currentRoute();
+    if (route.page === "verify") {
+      const pending = loadPendingRegistration();
+      if (!pending?.email) {
+        history.replaceState(null, "", "#/register");
+        const cfg = await ensureRegistrationConfig();
+        renderAuth("register", { registrationConfig: cfg });
+        return;
+      }
+      renderAuth("verify", {
+        values: { email: pending.email },
+        pending,
+      });
+      return;
+    }
+    if (route.page === "register") {
+      const cfg = await ensureRegistrationConfig();
+      renderAuth("register", { registrationConfig: cfg });
+      return;
+    }
+    renderAuth("login");
     return;
   }
 
@@ -867,40 +1037,149 @@ async function render({ focus = false } = {}) {
   renderApp({ focus });
 }
 
+async function finishSignedIn(user, toastMessage) {
+  savePendingRegistration(null);
+  setChromeForAuth(user);
+  clearGroupState();
+  await refreshGroups();
+  await restoreActiveGroup();
+  showToast(toastMessage);
+  location.hash = activeGroup ? "#/dashboard" : "#/groups";
+  await render({ focus: true });
+}
+
 async function handleAuthSubmit(form) {
   const mode = form.dataset.mode;
   const values = Object.fromEntries(new FormData(form));
   const submit = form.querySelector('[type="submit"]');
   submit.disabled = true;
   try {
-    const result = mode === "register"
-      ? await registerUser({ name: values.name, email: values.email, password: values.password })
-      : await loginUser({ email: values.email, password: values.password });
-
-    if (!result.ok) {
-      renderAuth(mode, {
-        error: result.data.error ?? "Something went wrong. Try again.",
-        fields: result.data.fields ?? {},
-        values: { name: values.name, email: values.email },
-      });
+    if (mode === "verify") {
+      const result = await verifyEmail({ email: values.email, code: values.code });
+      if (!result.ok) {
+        renderAuth("verify", {
+          error: result.data.error ?? "Something went wrong. Try again.",
+          fields: result.data.fields ?? {},
+          values: { email: values.email, code: values.code },
+          pending: loadPendingRegistration(),
+        });
+        return;
+      }
+      await finishSignedIn(result.data.user, "Email verified — account created");
       return;
     }
 
-    setChromeForAuth(result.data.user);
-    clearGroupState();
-    await refreshGroups();
-    await restoreActiveGroup();
-    showToast(mode === "register" ? "Account created" : "Signed in");
-    location.hash = activeGroup ? "#/dashboard" : "#/groups";
-    await render({ focus: true });
+    if (mode === "register") {
+      const turnstileToken = readTurnstileToken();
+      const result = await registerUser({
+        name: values.name,
+        email: values.email,
+        password: values.password,
+        turnstileToken,
+      });
+      if (!result.ok) {
+        resetTurnstile();
+        const cfg = await ensureRegistrationConfig();
+        renderAuth("register", {
+          error: result.data.error ?? "Something went wrong. Try again.",
+          fields: result.data.fields ?? {},
+          values: { name: values.name, email: values.email },
+          registrationConfig: cfg,
+        });
+        return;
+      }
+      savePendingRegistration({
+        email: result.data.email,
+        emailMasked: result.data.emailMasked,
+        resendAvailableAt: result.data.resendAvailableAt,
+        expiresAt: result.data.expiresAt,
+        ...(result.data.devCode ? { devCode: result.data.devCode } : {}),
+      });
+      showToast("Verification code sent");
+      location.hash = "#/verify";
+      await render({ focus: true });
+      return;
+    }
+
+    const result = await loginUser({ email: values.email, password: values.password });
+    if (!result.ok) {
+      renderAuth("login", {
+        error: result.data.error ?? "Something went wrong. Try again.",
+        fields: result.data.fields ?? {},
+        values: { email: values.email },
+      });
+      return;
+    }
+    await finishSignedIn(result.data.user, "Signed in");
   } catch {
-    renderAuth(mode, {
-      error: "Could not reach the server. Is GroupFlow running?",
-      values: { name: values.name, email: values.email },
-    });
+    if (mode === "verify") {
+      renderAuth("verify", {
+        error: "Could not reach the server. Is GroupFlow running?",
+        values: { email: values.email, code: values.code },
+        pending: loadPendingRegistration(),
+      });
+    } else if (mode === "register") {
+      const cfg = registrationConfigCache ?? await ensureRegistrationConfig().catch(() => null);
+      renderAuth("register", {
+        error: "Could not reach the server. Is GroupFlow running?",
+        values: { name: values.name, email: values.email },
+        registrationConfig: cfg,
+      });
+    } else {
+      renderAuth("login", {
+        error: "Could not reach the server. Is GroupFlow running?",
+        values: { email: values.email },
+      });
+    }
   } finally {
     const liveSubmit = document.querySelector("#auth-form [type='submit']");
     if (liveSubmit) liveSubmit.disabled = false;
+  }
+}
+
+async function handleResendCode() {
+  const pending = loadPendingRegistration();
+  if (!pending?.email) {
+    location.hash = "#/register";
+    await render({ focus: true });
+    return;
+  }
+  const btn = document.querySelector("#resend-code-btn");
+  if (btn) btn.disabled = true;
+  try {
+    const result = await resendVerificationCode({ email: pending.email });
+    if (!result.ok) {
+      renderAuth("verify", {
+        error: result.data.error ?? "Could not resend the code.",
+        fields: result.data.fields ?? {},
+        values: { email: pending.email },
+        pending: {
+          ...pending,
+          ...(result.data.resendAvailableAt
+            ? { resendAvailableAt: result.data.resendAvailableAt }
+            : {}),
+        },
+      });
+      return;
+    }
+    savePendingRegistration({
+      email: result.data.email,
+      emailMasked: result.data.emailMasked,
+      resendAvailableAt: result.data.resendAvailableAt,
+      expiresAt: result.data.expiresAt,
+      ...(result.data.devCode ? { devCode: result.data.devCode } : {}),
+    });
+    showToast("New verification code sent");
+    renderAuth("verify", {
+      values: { email: result.data.email },
+      pending: loadPendingRegistration(),
+    });
+  } catch {
+    renderAuth("verify", {
+      error: "Could not reach the server. Is GroupFlow running?",
+      values: { email: pending.email },
+      pending,
+    });
   }
 }
 
@@ -1207,6 +1486,12 @@ document.querySelectorAll("[data-close]").forEach((button) => {
 });
 
 main.addEventListener("click", async (event) => {
+  if (event.target.id === "resend-code-btn") {
+    event.preventDefault();
+    await handleResendCode();
+    return;
+  }
+
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const { action, id } = target.dataset;
@@ -1270,6 +1555,27 @@ main.addEventListener("click", async (event) => {
   if (action === "reload-messages") {
     await loadMessages();
     render({ focus: true });
+    return;
+  }
+
+  if (action === "clear-attachment") {
+    chatPendingFile = null;
+    chatUploadProgress = null;
+    chatSendError = "";
+    renderApp();
+    return;
+  }
+
+  if (action === "delete-attachment" && id && activeGroup) {
+    if (!confirm("Delete this attachment? Group members will no longer be able to download it.")) return;
+    const result = await deleteAttachment(activeGroup.id, id);
+    if (!result.ok) {
+      showToast(result.data.error ?? "Could not delete attachment");
+      return;
+    }
+    showToast("Attachment deleted");
+    await loadMessages({ quiet: true });
+    renderApp();
     return;
   }
 
@@ -1340,6 +1646,14 @@ main.addEventListener("change", (event) => {
     render();
     main.querySelector("#board-filter")?.focus();
   }
+  if (event.target.id === "chat-file-input") {
+    const file = event.target.files?.[0] ?? null;
+    chatPendingFile = file;
+    chatUploadProgress = null;
+    chatSendError = "";
+    event.target.value = "";
+    renderApp();
+  }
 });
 
 main.addEventListener("submit", async (event) => {
@@ -1363,31 +1677,59 @@ main.addEventListener("submit", async (event) => {
   const input = event.target.elements.text;
   const text = String(input?.value ?? "");
   chatDraft = text;
-  if (!text.trim()) {
+  if (!text.trim() && !chatPendingFile) {
     chatSendError = "Message cannot be blank.";
     renderApp();
     return;
   }
   chatSending = true;
   chatSendError = "";
+  chatUploadProgress = chatPendingFile ? 0 : null;
   renderApp();
   try {
-    const result = await sendMessage(activeGroup.id, text);
+    let attachmentId = null;
+    if (chatPendingFile) {
+      const uploaded = await uploadAttachment(activeGroup.id, chatPendingFile, {
+        onProgress: (pct) => {
+          chatUploadProgress = pct;
+          const label = document.querySelector(".attachment-pending span");
+          if (label && chatPendingFile) {
+            label.textContent = `Attached: ${chatPendingFile.name} (${pct}%)`;
+          }
+        },
+      });
+      if (!uploaded.ok) {
+        chatSendError = uploaded.data.fields?.file
+          ?? uploaded.data.error
+          ?? "Could not upload attachment.";
+        showToast(chatSendError);
+        return;
+      }
+      attachmentId = uploaded.data.attachment?.id ?? null;
+      chatUploadProgress = 100;
+    }
+
+    const result = await sendMessage(activeGroup.id, { text, attachmentId });
     if (!result.ok) {
       chatDraft = text;
-      chatSendError = result.data.fields?.text ?? result.data.error ?? "Could not send message.";
+      chatSendError = result.data.fields?.text
+        ?? result.data.fields?.attachmentId
+        ?? result.data.error
+        ?? "Could not send message.";
       showToast(result.data.error ?? "Message not sent");
       return;
     }
     chatDraft = "";
+    chatPendingFile = null;
+    chatUploadProgress = null;
     chatSendError = "";
     applyMessagesFromServer([...(state.messages ?? []), result.data.message]);
-    showToast("Message sent");
+    showToast(attachmentId ? "File shared" : "Message sent");
     await loadActivity({ quiet: true });
     chatForceScrollBottom = true;
   } catch {
     chatDraft = text;
-    chatSendError = "Could not reach the server. Your text was kept.";
+    chatSendError = "Could not reach the server. Your draft was kept.";
     showToast("Could not reach the server. Message not sent.");
   } finally {
     chatSending = false;

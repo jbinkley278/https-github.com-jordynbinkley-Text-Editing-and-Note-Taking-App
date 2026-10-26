@@ -26,8 +26,20 @@ export function fetchCurrentUser() {
   return api("/api/auth/me");
 }
 
+export function fetchRegistrationConfig() {
+  return api("/api/auth/registration-config");
+}
+
 export function registerUser(fields) {
   return api("/api/auth/register", { method: "POST", body: fields });
+}
+
+export function verifyEmail(fields) {
+  return api("/api/auth/verify-email", { method: "POST", body: fields });
+}
+
+export function resendVerificationCode(fields) {
+  return api("/api/auth/resend-code", { method: "POST", body: fields });
 }
 
 export function loginUser(fields) {
@@ -110,11 +122,57 @@ export function listMessages(groupId) {
   return api(`/api/groups/${encodeURIComponent(groupId)}/messages`);
 }
 
-export function sendMessage(groupId, text) {
+export function sendMessage(groupId, { text = "", attachmentId = null } = {}) {
+  const body = { text };
+  if (attachmentId) body.attachmentId = attachmentId;
   return api(`/api/groups/${encodeURIComponent(groupId)}/messages`, {
     method: "POST",
-    body: { text },
+    body,
   });
+}
+
+export function attachmentDownloadUrl(groupId, attachmentId, { inline = false } = {}) {
+  const base = `/api/groups/${encodeURIComponent(groupId)}/attachments/${encodeURIComponent(attachmentId)}`;
+  return inline ? `${base}?disposition=inline` : base;
+}
+
+/**
+ * Upload a chat attachment (multipart). Optional onProgress(0–100).
+ */
+export function uploadAttachment(groupId, file, { onProgress } = {}) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/groups/${encodeURIComponent(groupId)}/messages/attachments`);
+    xhr.withCredentials = true;
+    xhr.responseType = "json";
+    if (typeof onProgress === "function") {
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return;
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      };
+    }
+    xhr.onload = () => {
+      const data = xhr.response ?? {};
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        data: typeof data === "object" && data ? data : { error: "Upload failed." },
+      });
+    };
+    xhr.onerror = () => {
+      resolve({ ok: false, status: 0, data: { error: "Could not reach the server." } });
+    };
+    const form = new FormData();
+    form.append("file", file, file.name);
+    xhr.send(form);
+  });
+}
+
+export function deleteAttachment(groupId, attachmentId) {
+  return api(
+    `/api/groups/${encodeURIComponent(groupId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: "DELETE" },
+  );
 }
 
 export function fetchUnreadCount(groupId) {

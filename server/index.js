@@ -2,19 +2,23 @@ import { createApp } from "./app.js";
 import { config } from "./config.js";
 import { closeDb, startDbReconnect, stopDbReconnect } from "./db.js";
 import { ensureAuthIndexes } from "./auth/sessions.js";
+import { ensurePendingRegistrationIndexes } from "./auth/pendingRegistrations.js";
 import { ensureGroupIndexes } from "./groups/service.js";
 import { ensureTaskIndexes } from "./tasks/service.js";
 import { ensureMessageIndexes } from "./messages/service.js";
 import { ensureReadPositionIndexes } from "./messages/readPosition.js";
+import { ensureAttachmentIndexes } from "./messages/attachments.js";
 import { ensureEventIndexes } from "./events/service.js";
 import { ensureActivityIndexes } from "./activity/service.js";
 
 async function ensureAllIndexes(db) {
   await ensureAuthIndexes(db);
+  await ensurePendingRegistrationIndexes(db);
   await ensureGroupIndexes(db);
   await ensureTaskIndexes(db);
   await ensureMessageIndexes(db);
   await ensureReadPositionIndexes(db);
+  await ensureAttachmentIndexes(db);
   await ensureEventIndexes(db);
   await ensureActivityIndexes(db);
 }

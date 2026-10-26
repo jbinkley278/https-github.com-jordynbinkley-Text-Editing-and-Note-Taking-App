@@ -3,6 +3,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { countUnreadMessages, markMessagesRead } from "./readPosition.js";
 import { validateMessagePayload } from "./validation.js";
 import { createMessage, listMessages } from "./service.js";
+import { stageAttachment } from "./attachments.js";
+import { parseMultipartFile } from "./multipart.js";
 
 function sendError(res, error) {
   const status = error.status ?? 500;
@@ -38,6 +40,26 @@ export function createMessagesRouter() {
         upToMessageId,
       );
       return res.json(result);
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  router.post("/attachments", async (req, res) => {
+    try {
+      const parsed = await parseMultipartFile(req);
+      if (!parsed.file) {
+        return res.status(400).json({
+          error: "Choose a file to upload.",
+          fields: { file: "Choose a file to upload." },
+        });
+      }
+      const attachment = await stageAttachment(req.db, req.params.groupId, req.user, {
+        buffer: parsed.file.buffer,
+        filename: parsed.file.filename,
+        mimeType: parsed.file.mimeType,
+      });
+      return res.status(201).json({ attachment });
     } catch (error) {
       return sendError(res, error);
     }

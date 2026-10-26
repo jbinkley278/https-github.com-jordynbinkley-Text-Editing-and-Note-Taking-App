@@ -3,16 +3,8 @@ import test from "node:test";
 import { ObjectId } from "mongodb";
 import { withServer } from "./helpers.mjs";
 
-async function johnMarkGroup(request, cookieJar) {
-  const john = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "John Unread",
-      email: `john_un_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-  });
-  assert.equal(john.status, 201);
+async function johnMarkGroup(request, cookieJar, register) {
+  const john = await register("John Unread");
   const group = await request("/api/groups", {
     method: "POST",
     body: { name: "Unread Lab" },
@@ -23,16 +15,7 @@ async function johnMarkGroup(request, cookieJar) {
     body: {},
   });
   const markJar = cookieJar();
-  const mark = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "Mark Unread",
-      email: `mark_un_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-    jar: markJar,
-  });
-  assert.equal(mark.status, 201);
+  const mark = await register("Mark Unread", { jar: markJar });
   await request("/api/groups/join", {
     method: "POST",
     body: { code: invite.data.invitation.code },
@@ -40,15 +23,15 @@ async function johnMarkGroup(request, cookieJar) {
   });
   return {
     groupId: group.data.group.id,
-    johnId: john.data.user.id,
-    markId: mark.data.user.id,
+    johnId: john.user.id,
+    markId: mark.user.id,
     markJar,
   };
 }
 
 test("own messages are excluded from unread; others increase until marked read", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const fromJohn = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
@@ -79,8 +62,8 @@ test("own messages are excluded from unread; others increase until marked read",
 });
 
 test("read cursor advances only through upToMessageId and ignores stale older requests", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const first = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
@@ -124,8 +107,8 @@ test("read cursor advances only through upToMessageId and ignores stale older re
 });
 
 test("read positions are isolated by user and group and persist in MongoDB", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const msg = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
@@ -182,8 +165,8 @@ test("read positions are isolated by user and group and persist in MongoDB", asy
 });
 
 test("unread endpoints require auth/membership; reading does not create activity", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
     const msg = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
       body: { text: "activity check" },
@@ -195,15 +178,7 @@ test("unread endpoints require auth/membership; reading does not create activity
     assert.equal(unauth.status, 401);
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Outsider Unread",
-        email: `out_un_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Outsider Unread", { jar: outsiderJar, email: `out_un_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com` });
     const denied = await request(`/api/groups/${groupId}/messages/unread`, { jar: outsiderJar });
     assert.equal(denied.status, 403);
     const deniedRead = await request(`/api/groups/${groupId}/messages/read`, {
@@ -224,8 +199,8 @@ test("unread endpoints require auth/membership; reading does not create activity
 });
 
 test("existing history counts as unread until displayed; new messages after cursor stay unread", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const older = await request(`/api/groups/${groupId}/messages`, {
       method: "POST",
@@ -264,8 +239,8 @@ test("existing history counts as unread until displayed; new messages after curs
 });
 
 test("identical createdAt timestamps break ties by ObjectId; stale reads stay monotonic", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId, johnId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId, johnId, markJar } = await johnMarkGroup(request, cookieJar, register);
     assert.equal(db.databaseName.endsWith("_test"), true);
 
     const groupOid = new ObjectId(groupId);
