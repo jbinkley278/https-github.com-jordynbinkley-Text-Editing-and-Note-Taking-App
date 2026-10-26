@@ -14,24 +14,61 @@ import {
 } from "../server/db.js";
 import { createApp } from "../server/app.js";
 import { ensureAuthIndexes } from "../server/auth/sessions.js";
+import { ensurePendingRegistrationIndexes } from "../server/auth/pendingRegistrations.js";
 import { ensureGroupIndexes } from "../server/groups/service.js";
 import { ensureTaskIndexes } from "../server/tasks/service.js";
 import { ensureMessageIndexes } from "../server/messages/service.js";
 import { ensureReadPositionIndexes } from "../server/messages/readPosition.js";
+import { ensureAttachmentIndexes } from "../server/messages/attachments.js";
 import { ensureEventIndexes } from "../server/events/service.js";
 import { ensureActivityIndexes } from "../server/activity/service.js";
+import {
+  resetEmailAdapterForTests,
+  setEmailAdapterForTests,
+} from "../server/auth/routes.js";
+import { createMemoryEmailAdapter } from "../server/email/adapter.js";
+import {
+  resetTurnstileVerifyForTests,
+  setTurnstileVerifyForTests,
+} from "../server/auth/turnstile.js";
 
 /** Closed port — does not touch the user's running MongoDB process. */
 const UNREACHABLE_TEST_URI = "mongodb://127.0.0.1:1/groupflow_reconnect_test";
 
 async function ensureAllIndexes(db) {
   await ensureAuthIndexes(db);
+  await ensurePendingRegistrationIndexes(db);
   await ensureGroupIndexes(db);
   await ensureTaskIndexes(db);
   await ensureMessageIndexes(db);
   await ensureReadPositionIndexes(db);
+  await ensureAttachmentIndexes(db);
   await ensureEventIndexes(db);
   await ensureActivityIndexes(db);
+}
+
+async function registerVerified(request, { name, email, password }) {
+  const emailAdapter = createMemoryEmailAdapter();
+  setEmailAdapterForTests(emailAdapter);
+  setTurnstileVerifyForTests(async () => ({ ok: true, hostname: "localhost" }));
+  try {
+    const pending = await request("/api/auth/register", {
+      method: "POST",
+      body: { name, email, password, turnstileToken: "test-token" },
+    });
+    assert.equal(pending.status, 200, pending.data.error);
+    const code = pending.data.devCode ?? emailAdapter.sent.at(-1)?.code;
+    assert.ok(code);
+    const verified = await request("/api/auth/verify-email", {
+      method: "POST",
+      body: { email, code },
+    });
+    assert.equal(verified.status, 201, verified.data.error);
+    return verified;
+  } finally {
+    resetEmailAdapterForTests();
+    resetTurnstileVerifyForTests();
+  }
 }
 
 async function withEphemeralApp(run) {
@@ -147,15 +184,11 @@ test("eventual recovery from startup marks ready after indexes without restartin
     assert.ok(db);
     assert.equal(db.databaseName, validatedTestTarget.database);
 
-    const register = await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Recovered User",
-        email: `recovered_${Date.now()}@example.com`,
-        password: "password123",
-      },
+    await registerVerified(request, {
+      name: "Recovered User",
+      email: `recovered_${Date.now()}@example.com`,
+      password: "password123",
     });
-    assert.equal(register.status, 201, register.data.error);
   });
 
   stopDbReconnect();
@@ -221,15 +254,11 @@ test("post-ready connection loss clears readiness, returns 503, and recovers wit
     assert.equal(restored.data.databaseReady, true);
     assert.equal(restored.data.databaseRetrying, false);
 
-    const register = await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Case Two User",
-        email: `case2_${Date.now()}@example.com`,
-        password: "password123",
-      },
+    await registerVerified(request, {
+      name: "Case Two User",
+      email: `case2_${Date.now()}@example.com`,
+      password: "password123",
     });
-    assert.equal(register.status, 201, register.data.error);
   });
 
   stopDbReconnect();

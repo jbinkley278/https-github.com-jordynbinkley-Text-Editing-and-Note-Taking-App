@@ -45,12 +45,7 @@ test("invite acceptance adds a Student Member; duplicate join is rejected", asyn
 
     const memberJar = cookieJar();
     const email = `member_${Date.now()}@example.com`;
-    const memberReg = await request("/api/auth/register", {
-      method: "POST",
-      body: { name: "Member Two", email, password: "password123" },
-      jar: memberJar,
-    });
-    assert.equal(memberReg.status, 201);
+    await register("Member Two", { jar: memberJar, email });
 
     const joined = await request("/api/groups/join", {
       method: "POST",
@@ -100,15 +95,7 @@ test("invalid, expired, and revoked invitations are rejected", async () => {
     });
 
     const memberJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Late Joiner",
-        email: `late_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: memberJar,
-    });
+    await register("Late Joiner", { jar: memberJar, email: `late_${Date.now()}@example.com` });
     const expired = await request("/api/groups/join", {
       method: "POST",
       body: { code: invite.data.invitation.code },
@@ -147,15 +134,7 @@ test("non-members and non-coordinators are denied group management access", asyn
     const groupId = group.data.group.id;
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Outsider",
-        email: `out_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Outsider", { jar: outsiderJar, email: `out_${Date.now()}@example.com` });
 
     const deniedMembers = await request(`/api/groups/${groupId}/members`, { jar: outsiderJar });
     assert.equal(deniedMembers.status, 403);
@@ -172,15 +151,7 @@ test("non-members and non-coordinators are denied group management access", asyn
       body: {},
     });
     const memberJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Plain Member",
-        email: `plain_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: memberJar,
-    });
+    await register("Plain Member", { jar: memberJar, email: `plain_${Date.now()}@example.com` });
     await request("/api/groups/join", {
       method: "POST",
       body: { code: invite.data.invitation.code },

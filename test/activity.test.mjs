@@ -30,16 +30,8 @@ async function withFailingActivityInserts(failActions, run) {
   }
 }
 
-async function johnMarkGroup(request, cookieJar) {
-  const john = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "John Activity",
-      email: `john_act_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-  });
-  assert.equal(john.status, 201);
+async function johnMarkGroup(request, cookieJar, register) {
+  const john = await register("John Activity");
   const group = await request("/api/groups", {
     method: "POST",
     body: { name: "Activity Lab" },
@@ -50,16 +42,7 @@ async function johnMarkGroup(request, cookieJar) {
     body: {},
   });
   const markJar = cookieJar();
-  const mark = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "Mark Activity",
-      email: `mark_act_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-    jar: markJar,
-  });
-  assert.equal(mark.status, 201);
+  const mark = await register("Mark Activity", { jar: markJar });
   await request("/api/groups/join", {
     method: "POST",
     body: { code: invite.data.invitation.code },
@@ -67,15 +50,15 @@ async function johnMarkGroup(request, cookieJar) {
   });
   return {
     groupId: group.data.group.id,
-    johnId: john.data.user.id,
-    markId: mark.data.user.id,
+    johnId: john.user.id,
+    markId: mark.user.id,
     markJar,
   };
 }
 
 test("activity attributes actors from session for successful task mutations", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, johnId, markId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, johnId, markId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const created = await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
@@ -120,8 +103,8 @@ test("activity attributes actors from session for successful task mutations", as
 });
 
 test("failed mutations and list reads do not create activity records", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar, register);
 
     const before = await db.collection("activity").countDocuments({});
     const bad = await request(`/api/groups/${groupId}/tasks`, {
@@ -150,8 +133,8 @@ test("failed mutations and list reads do not create activity records", async () 
 });
 
 test("activity persists after deletes and survives across request cycles", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
     const created = await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
       body: { title: "Temp task", dueDate: "2026-11-06", status: "todo", priority: "low" },
@@ -182,8 +165,8 @@ test("activity persists after deletes and survives across request cycles", async
 });
 
 test("contribution summary counts actions per member without inventing history", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, johnId, markId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, johnId, markId, markJar } = await johnMarkGroup(request, cookieJar, register);
 
     const empty = await request(`/api/groups/${groupId}/activity/summary`);
     assert.equal(empty.status, 200);
@@ -227,23 +210,15 @@ test("contribution summary counts actions per member without inventing history",
 });
 
 test("activity endpoints enforce auth and cross-group isolation", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar, register);
     await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
       body: { title: "Private to lab", dueDate: "2026-11-09", status: "todo", priority: "medium" },
     });
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Outsider",
-        email: `out_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Outsider", { jar: outsiderJar, email: `out_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com` });
     const otherGroup = await request("/api/groups", {
       method: "POST",
       body: { name: "Other group" },
@@ -268,8 +243,8 @@ test("activity endpoints enforce auth and cross-group isolation", async () => {
 });
 
 test("activity failure after create still returns the saved resource (not 500)", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar, register);
     const before = await db.collection("activity").countDocuments({});
 
     await withFailingActivityInserts(true, async () => {
@@ -296,8 +271,8 @@ test("activity failure after create still returns the saved resource (not 500)",
 });
 
 test("failed primary writes still fail and produce no activity", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId } = await johnMarkGroup(request, cookieJar, register);
     const beforeTasks = await db.collection("tasks").countDocuments({});
     const beforeActivity = await db.collection("activity").countDocuments({});
 
@@ -315,8 +290,8 @@ test("failed primary writes still fail and produce no activity", async () => {
 });
 
 test("multi-entry task updates attempt remaining activity entries after one fails", async () => {
-  await withServer(async ({ request, cookieJar, db }) => {
-    const { groupId, markJar } = await johnMarkGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, db, register }) => {
+    const { groupId, markJar } = await johnMarkGroup(request, cookieJar, register);
     const created = await request(`/api/groups/${groupId}/tasks`, {
       method: "POST",
       body: {

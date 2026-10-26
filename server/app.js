@@ -8,6 +8,7 @@ import { createActivityRouter } from "./activity/routes.js";
 import { createGroupsRouter } from "./groups/routes.js";
 import { createTasksRouter } from "./tasks/routes.js";
 import { createMessagesRouter } from "./messages/routes.js";
+import { createAttachmentRouter } from "./messages/attachmentRoutes.js";
 import { createEventsRouter } from "./events/routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +51,7 @@ export function createApp() {
   app.use("/api/auth", createAuthRouter());
   app.use("/api/groups/:groupId/tasks", createTasksRouter());
   app.use("/api/groups/:groupId/messages", createMessagesRouter());
+  app.use("/api/groups/:groupId/attachments", createAttachmentRouter());
   app.use("/api/groups/:groupId/events", createEventsRouter());
   app.use("/api/groups/:groupId/activity", createActivityRouter());
   app.use("/api/groups", createGroupsRouter());

@@ -2,16 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withServer } from "./helpers.mjs";
 
-async function memberGroup(request, cookieJar) {
-  const owner = await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "John Calendar",
-      email: `john_cal_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-  });
-  assert.equal(owner.status, 201);
+async function memberGroup(request, cookieJar, register) {
+  await register("John Calendar");
   const group = await request("/api/groups", {
     method: "POST",
     body: { name: "Calendar Lab" },
@@ -22,15 +14,7 @@ async function memberGroup(request, cookieJar) {
     body: {},
   });
   const markJar = cookieJar();
-  await request("/api/auth/register", {
-    method: "POST",
-    body: {
-      name: "Mark Calendar",
-      email: `mark_cal_${Date.now()}_${Math.random().toString(16).slice(2)}@example.com`,
-      password: "password123",
-    },
-    jar: markJar,
-  });
+  await register("Mark Calendar", { jar: markJar });
   await request("/api/groups/join", {
     method: "POST",
     body: { code: invite.data.invitation.code },
@@ -40,8 +24,8 @@ async function memberGroup(request, cookieJar) {
 }
 
 test("event CRUD persists meetings with date and optional timed timezone", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, markJar } = await memberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, markJar } = await memberGroup(request, cookieJar, register);
 
     const created = await request(`/api/groups/${groupId}/events`, {
       method: "POST",
@@ -84,8 +68,8 @@ test("event CRUD persists meetings with date and optional timed timezone", async
 });
 
 test("event validation rejects blank title and bad dates/times", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await memberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await memberGroup(request, cookieJar, register);
     const blank = await request(`/api/groups/${groupId}/events`, {
       method: "POST",
       body: { title: "  ", date: "2026-10-28" },
@@ -107,8 +91,8 @@ test("event validation rejects blank title and bad dates/times", async () => {
 });
 
 test("date-only events and task due dates stay YYYY-MM-DD without timezone conversion", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId, markJar } = await memberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId, markJar } = await memberGroup(request, cookieJar, register);
     const event = await request(`/api/groups/${groupId}/events`, {
       method: "POST",
       body: { title: "Demo day", date: "2026-11-01", startTime: null, timeZone: "UTC" },
@@ -134,8 +118,8 @@ test("date-only events and task due dates stay YYYY-MM-DD without timezone conve
 });
 
 test("cross-group event access by id is denied", async () => {
-  await withServer(async ({ request, cookieJar }) => {
-    const { groupId } = await memberGroup(request, cookieJar);
+  await withServer(async ({ request, cookieJar, register }) => {
+    const { groupId } = await memberGroup(request, cookieJar, register);
     const created = await request(`/api/groups/${groupId}/events`, {
       method: "POST",
       body: { title: "Private meeting", date: "2026-10-30" },
@@ -144,15 +128,7 @@ test("cross-group event access by id is denied", async () => {
     const eventId = created.data.event.id;
 
     const otherJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Other Cal",
-        email: `other_cal_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: otherJar,
-    });
+    await register("Other Cal", { jar: otherJar, email: `other_cal_${Date.now()}@example.com` });
     const otherGroup = await request("/api/groups", {
       method: "POST",
       body: { name: "Other Cal Group" },
@@ -165,15 +141,7 @@ test("cross-group event access by id is denied", async () => {
     assert.equal(leak.status, 404);
 
     const outsiderJar = cookieJar();
-    await request("/api/auth/register", {
-      method: "POST",
-      body: {
-        name: "Stranger Cal",
-        email: `stranger_cal_${Date.now()}@example.com`,
-        password: "password123",
-      },
-      jar: outsiderJar,
-    });
+    await register("Stranger Cal", { jar: outsiderJar, email: `stranger_cal_${Date.now()}@example.com` });
     const forbidden = await request(`/api/groups/${groupId}/events/${eventId}`, {
       jar: outsiderJar,
     });

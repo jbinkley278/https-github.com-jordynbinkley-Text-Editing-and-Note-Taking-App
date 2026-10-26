@@ -51,3 +51,18 @@ export function validateLogin({ email, password }) {
   }
   return { ok: true, value: { emailNormalized, password: rawPassword } };
 }
+
+/**
+ * @returns {{ ok: true, value: string } | { ok: false, fields: Record<string, string>, error: string }}
+ */
+export function validateVerificationCode(code) {
+  const normalized = String(code ?? "").trim();
+  if (!/^\d{6}$/.test(normalized)) {
+    return {
+      ok: false,
+      fields: { code: "Enter the 6-digit verification code." },
+      error: "Enter the 6-digit verification code.",
+    };
+  }
+  return { ok: true, value: normalized };
+}

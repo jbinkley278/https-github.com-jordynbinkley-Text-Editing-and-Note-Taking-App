@@ -257,6 +257,40 @@ export function calendarView(state, today, year, month, {
     </div>` : ""}`;
 }
 
+function chatAttachmentBlock(message, groupId) {
+  const attachment = message.attachment;
+  if (!attachment) return "";
+  if (attachment.removed) {
+    return `<p class="attachment-removed muted">Attachment removed</p>`;
+  }
+  const href = `/api/groups/${encodeURIComponent(groupId)}/attachments/${encodeURIComponent(attachment.id)}`;
+  const inline = `${href}?disposition=inline`;
+  const meta = `${esc(attachment.fileName)} · ${formatBytes(attachment.size)}`;
+  const image = attachment.isImage
+    ? `<a class="attachment-image-link" href="${esc(href)}" target="_blank" rel="noopener">
+         <img class="attachment-image" src="${esc(inline)}" alt="${esc(attachment.fileName)}" loading="lazy" />
+       </a>`
+    : "";
+  const deleteBtn = attachment.canDelete
+    ? `<button type="button" class="btn-danger attachment-delete" data-action="delete-attachment" data-id="${esc(attachment.id)}">Delete file</button>`
+    : "";
+  return `
+    <div class="attachment">
+      ${image}
+      <div class="attachment-row">
+        <a class="attachment-download" href="${esc(href)}" download="${esc(attachment.fileName)}">${meta}</a>
+        ${deleteBtn}
+      </div>
+    </div>`;
+}
+
+function formatBytes(size) {
+  const n = Number(size) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function chatView(state, {
   loading = false,
   error = "",
@@ -264,11 +298,17 @@ export function chatView(state, {
   sending = false,
   draft = "",
   sessionUserId = "",
+  groupId = "",
+  pendingFileName = "",
+  uploadProgress = null,
 } = {}) {
   const messages = state.messages ?? [];
+  const pendingLabel = pendingFileName
+    ? `Attached: ${esc(pendingFileName)}${uploadProgress != null ? ` (${uploadProgress}%)` : ""}`
+    : "";
   return `
     <h1>Group Chat</h1>
-    <p class="muted">Shared group messages from MongoDB. New messages appear automatically about every 3 seconds while this page is open.</p>
+    <p class="muted">Shared group messages from MongoDB. You can attach one file per message (max 10 MB). New messages appear automatically about every 3 seconds while this page is open.</p>
     ${loading ? loadingBlock("Loading messages…") : ""}
     ${error ? `${errorBlock(error)} <p><button type="button" class="btn-secondary" data-action="reload-messages">Try again</button></p>` : ""}
     ${!loading && !error && !messages.length ? `<p class="muted empty-chat">No messages yet. Say hello to your group.</p>` : ""}
@@ -277,12 +317,16 @@ export function chatView(state, {
         const name = m.senderName || memberName(state, m.senderId);
         const mine = m.senderId === sessionUserId;
         const stamp = m.createdAt || m.timestamp;
+        const body = m.text
+          ? `<p>${esc(m.text)}</p>`
+          : (m.attachment && !m.attachment.removed ? "" : `<p class="muted">Empty message</p>`);
         return `
         <li class="message ${mine ? "mine" : ""}" data-message-id="${esc(m.id)}">
           <span class="avatar small" aria-hidden="true">${initials(name)}</span>
           <div class="bubble">
             <div class="message-head"><b>${esc(name)}</b> <time datetime="${esc(stamp)}">${timeAgo(stamp)}</time></div>
-            <p>${esc(m.text)}</p>
+            ${body}
+            ${chatAttachmentBlock(m, groupId)}
           </div>
         </li>`;
       }).join("")}
@@ -290,8 +334,15 @@ export function chatView(state, {
     <form class="composer" id="chat-form">
       <label class="sr-only" for="chat-input">Message</label>
       <input id="chat-input" name="text" placeholder="Type a message…" autocomplete="off" maxlength="500" value="${esc(draft)}" ${sending || loading ? "disabled" : ""} />
+      <label class="btn-secondary composer-attach" for="chat-file-input" ${sending || loading || error ? "aria-disabled=\"true\"" : ""}>Attach</label>
+      <input id="chat-file-input" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.docx,.xlsx,.pptx,image/jpeg,image/png,image/webp,application/pdf,text/plain" hidden ${sending || loading || error ? "disabled" : ""} />
       <button class="btn-primary" type="submit" ${sending || loading || error ? "disabled" : ""}>${sending ? "Sending…" : "Send"}</button>
     </form>
+    ${pendingFileName ? `
+      <p class="attachment-pending">
+        <span>${pendingLabel}</span>
+        <button type="button" class="btn-secondary" data-action="clear-attachment" ${sending ? "disabled" : ""}>Remove</button>
+      </p>` : ""}
     <p class="form-error" id="chat-form-error" role="alert">${esc(sendError)}</p>`;
 }
 
@@ -489,21 +540,71 @@ export function notFoundView() {
   return `<h1>Page not found</h1><p><a href="#/dashboard">Back to the dashboard</a></p>`;
 }
 
-/** mode: "login" | "register" */
-export function authView(mode = "login", { error = "", fields = {}, values = {} } = {}) {
+/** mode: "login" | "register" | "verify" */
+export function authView(mode = "login", {
+  error = "",
+  fields = {},
+  values = {},
+  pending = null,
+  registrationConfig = null,
+  resendLabel = "Resend code",
+  resendDisabled = false,
+} = {}) {
   const isRegister = mode === "register";
-  const title = isRegister ? "Create your account" : "Sign in to GroupFlow";
-  const subtitle = isRegister
-    ? "Register with your name, email, and password."
-    : "Use your GroupFlow email and password.";
+  const isVerify = mode === "verify";
+  const title = isVerify
+    ? "Verify your email"
+    : isRegister
+      ? "Create your account"
+      : "Sign in to GroupFlow";
+  const subtitle = isVerify
+    ? `Enter the 6-digit code sent to ${esc(pending?.emailMasked ?? values.email ?? "your email")}.`
+    : isRegister
+      ? "Register with your name, email, and password. We will email a verification code."
+      : "Use your GroupFlow email and password.";
   const field = (name) => esc(fields[name] ?? "");
   const value = (name) => esc(values[name] ?? "");
+  const captchaError = field("captcha");
+  const turnstileReady = registrationConfig?.turnstileConfigured && registrationConfig?.turnstileSiteKey;
+  const registrationBlocked = isRegister && registrationConfig && !registrationConfig.registrationReady;
+
+  if (isVerify) {
+    return `
+    <div class="auth-panel">
+      <section class="card auth-card">
+        <h1>${title}</h1>
+        <p class="muted">${subtitle}</p>
+        ${pending?.devCode ? `<p class="notice" id="dev-code-notice">Dev code: <strong>${esc(pending.devCode)}</strong> (local only)</p>` : ""}
+        <p class="form-error" id="auth-form-error" role="alert">${esc(error)}</p>
+        <form id="auth-form" data-mode="verify" novalidate>
+          <input type="hidden" name="email" value="${value("email") || esc(pending?.email ?? "")}" />
+          <label>Verification code
+            <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\\d{6}" required value="${value("code")}"${fields.code ? ' aria-invalid="true"' : ""} />
+          </label>
+          <p class="field-error" data-error="code">${field("code")}</p>
+          <div class="auth-actions">
+            <button type="submit" class="btn-primary">Verify and continue</button>
+            <button type="button" class="btn-secondary" id="resend-code-btn"${resendDisabled ? " disabled" : ""}>${esc(resendLabel)}</button>
+          </div>
+        </form>
+        <p class="auth-switch muted">
+          <a href="#/register">Start over</a> · <a href="#/login">Sign in</a>
+        </p>
+      </section>
+    </div>`;
+  }
 
   return `
     <div class="auth-panel">
       <section class="card auth-card">
         <h1>${title}</h1>
         <p class="muted">${subtitle}</p>
+        ${registrationBlocked ? `<p class="notice notice-error" role="alert">${esc(
+          registrationConfig.turnstileError
+            || registrationConfig.emailError
+            || registrationConfig.pepperError
+            || "Registration is not configured on this server.",
+        )}</p>` : ""}
         <p class="form-error" id="auth-form-error" role="alert">${esc(error)}</p>
         <form id="auth-form" data-mode="${isRegister ? "register" : "login"}" novalidate>
           ${isRegister ? `
@@ -520,8 +621,16 @@ export function authView(mode = "login", { error = "", fields = {}, values = {} 
             <input name="password" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}" required${fields.password ? ' aria-invalid="true"' : ""} />
           </label>
           <p class="field-error" data-error="password">${field("password")}</p>
+          ${isRegister ? `
+            <div class="turnstile-wrap" id="turnstile-wrap">
+              ${turnstileReady
+                ? `<div id="cf-turnstile" class="cf-turnstile" data-sitekey="${esc(registrationConfig.turnstileSiteKey)}" data-action="register"></div>`
+                : `<p class="muted">Human verification widget unavailable.</p>`}
+            </div>
+            <p class="field-error" data-error="captcha">${captchaError}</p>
+          ` : ""}
           <div class="auth-actions">
-            <button type="submit" class="btn-primary">${isRegister ? "Create account" : "Sign in"}</button>
+            <button type="submit" class="btn-primary"${registrationBlocked ? " disabled" : ""}>${isRegister ? "Send verification code" : "Sign in"}</button>
           </div>
         </form>
         <p class="auth-switch muted">
